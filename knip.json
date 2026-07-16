@@ -1,0 +1,22 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreExportsUsedInFile": true,
+  "workspaces": {
+    "packages/core": {
+      "project": "src/**"
+    },
+    "packages/chain-evm": {
+      "project": "src/**"
+    },
+    "packages/chain-solana": {
+      "project": "src/**"
+    },
+    "packages/chain-bitcoin": {
+      "project": "src/**"
+    },
+    "apps/extension": {
+      "ignoreUnresolved": ["#imports"],
+      "ignore": ["src/ui/components/shadcn/**"]
+    }
+  }
+}

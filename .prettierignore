@@ -1,0 +1,10 @@
+node_modules/
+**/dist/
+coverage/
+
+# WXT generated output and type scaffolding
+**/.wxt/
+**/.output/
+
+# Generated / not owned by us — reformatting it only creates noise in diffs.
+pnpm-lock.yaml
