@@ -1,0 +1,35 @@
+{
+  "name": "@openwallet/api",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "tsc -p tsconfig.json && node --watch dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@nestjs/cache-manager": "^3.0.1",
+    "@nestjs/common": "^11.1.6",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.1.6",
+    "@nestjs/platform-express": "^11.1.6",
+    "@nestjs/throttler": "^6.5.0",
+    "@openwallet/api-contract": "workspace:*",
+    "@openwallet/jupiter-client": "workspace:*",
+    "@openwallet/lifi-client": "workspace:*",
+    "cache-manager": "^6.4.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "eslint": "^10.7.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.0.0"
+  }
+}

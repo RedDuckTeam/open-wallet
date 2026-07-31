@@ -1,0 +1,8 @@
+# WXT generated output and type scaffolding
+.output/
+.wxt/
+stats.html
+
+# Local env (WXT loads it; keep out of git)
+.env
+.env.local
