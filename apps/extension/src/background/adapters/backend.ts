@@ -1,11 +1,13 @@
 import {
   API_ROUTES,
   NativePriceResponse,
+  NftListResponse,
   SolanaTokenListResponse,
   SwapQuoteResponse,
   TokenListResponse,
   TokenPriceResponse,
   type SwapQuoteResponse as SwapQuote,
+  type NftListResponse as NftList,
   type SolanaTokenInfo,
   type TokenInfo,
 } from "@openwallet/api-contract";
@@ -33,6 +35,18 @@ export class BackendClient {
       q: query,
       limit: String(limit),
     }).then((r) => r.tokens);
+  }
+
+  // Holdings enumeration. Returns the whole envelope, not just the array:
+  // `indexed` distinguishes "this account owns nothing" from "no indexer is
+  // configured", and the caller renders those very differently.
+  nfts(chainId: number, owner: string, limit: number, cursor?: string): Promise<NftList> {
+    return this.#get(NftListResponse, API_ROUTES.nfts, {
+      chainId: String(chainId),
+      owner,
+      limit: String(limit),
+      ...(cursor ? { cursor } : {}),
+    });
   }
 
   nativePrices(ids: readonly string[]): Promise<Record<string, number>> {

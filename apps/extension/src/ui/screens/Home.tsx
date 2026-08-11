@@ -11,6 +11,7 @@ import {
 import { walletApi } from "../../messaging/client.js";
 import {
   AssetKind,
+  ChainKind,
   type AccountView,
   type AssetView,
   type WalletStatus,
@@ -30,7 +31,15 @@ import {
 } from "../components/shadcn/dropdown-menu.js";
 
 export type HomeView =
-  "send" | "receive" | "accounts" | "networks" | "addToken" | "settings" | "connectedSites";
+  | "send"
+  | "receive"
+  | "accounts"
+  | "networks"
+  | "addToken"
+  | "settings"
+  | "smartAccount"
+  | "nfts"
+  | "connectedSites";
 
 // USD value of a holding, or null when it has no price (e.g. testnets).
 function valueUsd(asset: AssetView): number | null {
@@ -137,17 +146,32 @@ export function Home({
             <span className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
               Assets
             </span>
-            {status.network.supportsTokens ? (
-              <Button
-                variant="link"
-                size="sm"
-                className="h-auto p-0"
-                onClick={() => onNav("addToken")}
-              >
-                <Plus />
-                Add token
-              </Button>
-            ) : null}
+            <div className="flex items-center gap-3">
+              {/* NFTs live behind their own screen rather than mixed into the
+                  asset list: they're grid-shaped, not row-shaped, and the list
+                  is sorted by USD value, which an NFT doesn't have. */}
+              {status.network.kind === ChainKind.Evm ? (
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0"
+                  onClick={() => onNav("nfts")}
+                >
+                  Collectibles
+                </Button>
+              ) : null}
+              {status.network.supportsTokens ? (
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0"
+                  onClick={() => onNav("addToken")}
+                >
+                  <Plus />
+                  Add token
+                </Button>
+              ) : null}
+            </div>
           </div>
 
           {assets === null ? (

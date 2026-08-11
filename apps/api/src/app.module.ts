@@ -5,6 +5,7 @@ import { CacheModule } from "@nestjs/cache-manager";
 import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { HealthController } from "./health.controller.js";
 import { TokensModule } from "./tokens/tokens.module.js";
+import { NftsModule } from "./nfts/nfts.module.js";
 import { PricesModule } from "./prices/prices.module.js";
 import { SwapModule } from "./swap/swap.module.js";
 
@@ -18,6 +19,7 @@ import { SwapModule } from "./swap/swap.module.js";
     CacheModule.register({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 30 }]),
     TokensModule,
+    NftsModule,
     PricesModule,
     SwapModule,
   ],

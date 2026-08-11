@@ -58,6 +58,18 @@ export interface RuntimeEvent {
 
 // EIP-1193 provider errors. 4001 user rejected, 4100 unauthorized, 4200
 // unsupported, 4900 disconnected, -32602 invalid params, -32603 internal.
+/**
+ * An EIP-1193 provider error, carrying the numeric `code` a dApp switches on.
+ *
+ * Lives here rather than next to the approval window because it's part of the
+ * wire contract, and because everything that imports it would otherwise drag
+ * in `wxt/browser` — which is what kept `provider-service.ts` untestable
+ * outside a browser.
+ */
+export function providerError(code: number, message: string): Error & { code: number } {
+  return Object.assign(new Error(message), { code });
+}
+
 export const RPC_ERROR = {
   UserRejected: 4001,
   Unauthorized: 4100,

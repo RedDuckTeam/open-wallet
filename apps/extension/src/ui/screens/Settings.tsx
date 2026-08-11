@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Eye, Lock, Moon, Sun } from "lucide-react";
+import { Eye, Lock, Moon, Sparkles, Sun } from "lucide-react";
 import { walletApi } from "../../messaging/client.js";
 import { errorMessage } from "../format/error.js";
 import { useTheme } from "../hooks/useTheme.js";
@@ -24,14 +24,21 @@ export function Settings({
   onBack,
   onLocked,
   onReset,
+  onNav,
 }: {
   onBack: () => void;
   onLocked: () => void;
   onReset: () => void;
+  onNav: (view: "smartAccount") => void;
 }): React.ReactElement {
   return (
     <Screen title="Settings" onBack={onBack}>
       <Appearance />
+      <Separator />
+      <Button variant="outline" className="w-full" onClick={() => onNav("smartAccount")}>
+        <Sparkles />
+        Smart account
+      </Button>
       <Separator />
       <RevealPhrase />
       <Separator />

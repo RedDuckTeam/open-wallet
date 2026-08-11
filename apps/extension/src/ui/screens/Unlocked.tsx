@@ -9,6 +9,8 @@ import { Accounts } from "./Accounts.js";
 import { Networks } from "./Networks.js";
 import { AddToken } from "./AddToken.js";
 import { Settings } from "./Settings.js";
+import { SmartAccount } from "./SmartAccount.js";
+import { Nfts } from "./Nfts.js";
 import { Swap } from "./Swap.js";
 import { ConnectedSites } from "./ConnectedSites.js";
 
@@ -60,7 +62,11 @@ export function Unlocked({
       case "addToken":
         return <AddToken onBack={back} onAdded={backAndReload} />;
       case "settings":
-        return <Settings onBack={back} onLocked={reload} onReset={reload} />;
+        return <Settings onBack={back} onLocked={reload} onReset={reload} onNav={setView} />;
+      case "nfts":
+        return <Nfts network={status.network} onBack={back} />;
+      case "smartAccount":
+        return <SmartAccount network={status.network} onBack={() => setView("settings")} />;
       case "connectedSites":
         return <ConnectedSites onBack={back} />;
       case "swap":
