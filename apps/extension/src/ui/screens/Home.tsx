@@ -6,6 +6,7 @@ import {
   Globe,
   MoreVertical,
   Plus,
+  RefreshCw,
   Settings,
 } from "lucide-react";
 import { walletApi } from "../../messaging/client.js";
@@ -64,7 +65,7 @@ export function Home({
   account: AccountView;
   onNav: (view: HomeView) => void;
 }): React.ReactElement {
-  const { assets, error, reload } = useAssets();
+  const { assets, loading, error, reload } = useAssets();
   const total = (assets ?? []).reduce((sum, asset) => sum + (valueUsd(asset) ?? 0), 0);
   const totalIncomplete = (assets ?? []).some(hasMissingPrice);
 
@@ -147,6 +148,21 @@ export function Home({
               Assets
             </span>
             <div className="flex items-center gap-3">
+              {/* Balances refresh on a 20s poll and after every send; this is
+                  for the case the poll can't cover — a transaction that landed
+                  a moment ago, or a reload after an RPC error — so the user
+                  isn't left watching a stale number and guessing. */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-muted-foreground size-6"
+                onClick={reload}
+                disabled={loading}
+                aria-label="Refresh balances"
+                title="Refresh balances"
+              >
+                <RefreshCw className={loading ? "animate-spin" : undefined} />
+              </Button>
               {/* NFTs live behind their own screen rather than mixed into the
                   asset list: they're grid-shaped, not row-shaped, and the list
                   is sorted by USD value, which an NFT doesn't have. */}
