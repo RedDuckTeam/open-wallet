@@ -1,5 +1,9 @@
 import { address as bitcoinAddress } from "bitcoinjs-lib";
 import type { Address, PublicClient } from "viem";
+// ENSIP-15 name normalization, used as the "is this a name at all" guard before
+// a lookup. `resolveEnsAddress` normalizes again internally, which is a no-op:
+// UTS-46 normalization is idempotent.
+import { normalize } from "viem/ens";
 import type { ChainAdapter } from "@openwallet/core";
 import {
   createEvmAdapter,
@@ -58,8 +62,19 @@ export interface ChainService {
   adapterFor(network: NetworkConfig): ChainAdapter;
   // validate -> build -> sign -> broadcast; returns the tx hash.
   transfer(network: NetworkConfig, request: TransferRequest, signWith: SignWith): Promise<string>;
-  // Validates an address, or resolves ENS on EVM; null if neither.
-  resolveRecipient(network: NetworkConfig, value: string): Promise<string | null>;
+  /**
+   * Validates an address, or resolves an ENS name on EVM; null if neither.
+   *
+   * `ensNetwork` is the L1 the name is looked up on, which is deliberately
+   * not `network`: ENS lives on Ethereum only, so a name typed while Base or
+   * Arbitrum is active must still resolve. Pass null where no such network is
+   * configured and names will simply not resolve.
+   */
+  resolveRecipient(
+    network: NetworkConfig,
+    value: string,
+    ensNetwork: EvmNetwork | null,
+  ): Promise<string | null>;
   tokenMetadata(network: NetworkConfig, token: string): Promise<TokenMetadata>;
   // Native base units to keep for gas, so "Max" on the native asset stays sendable.
   feeReserve(network: NetworkConfig, address: string, intent: FeeIntent): Promise<bigint>;
@@ -176,17 +191,43 @@ async function transfer(
   return String(await adapter.broadcast(signed));
 }
 
-async function resolveRecipient(network: NetworkConfig, value: string): Promise<string | null> {
+/**
+ * Whether `value` is worth a registry lookup at all.
+ *
+ * Not restricted to `.eth`: ENS resolves DNS-imported names too, and an
+ * unregistered name comes back as `null` rather than as an error, so casting
+ * a slightly wider net costs one lookup and no correctness. `normalize`
+ * (ENSIP-15) is the real test — it rejects anything that can't be a name,
+ * such as a stray space, and doing it here rather than letting it throw
+ * inside the lookup is what keeps a typo reading as "not found" instead of
+ * as a resolution failure.
+ */
+function ensName(value: string): string | null {
+  if (!value.includes(".")) return null;
+  try {
+    return normalize(value);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveRecipient(
+  network: NetworkConfig,
+  value: string,
+  ensNetwork: EvmNetwork | null,
+): Promise<string | null> {
   const trimmed = value.trim();
   if (isValidAddress(network, trimmed)) return trimmed;
-  if (network.kind === ChainKind.Evm && trimmed.toLowerCase().endsWith(".eth")) {
-    try {
-      return await resolveEnsAddress(evmClientFor(network), trimmed);
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  if (network.kind !== ChainKind.Evm || !ensNetwork) return null;
+
+  const name = ensName(trimmed);
+  if (name === null) return null;
+  // Deliberately not caught: a name that isn't registered resolves to null,
+  // but a registry we couldn't reach is a different answer entirely. Swallowing
+  // that would tell the user their recipient doesn't exist when the truth is
+  // that the wallet never managed to ask — and with resolution pinned to L1,
+  // one unreachable endpoint would otherwise break names on every network.
+  return await resolveEnsAddress(evmClientFor(ensNetwork), name);
 }
 
 async function tokenMetadata(network: NetworkConfig, token: string): Promise<TokenMetadata> {

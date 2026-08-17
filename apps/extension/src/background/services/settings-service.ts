@@ -5,13 +5,15 @@ import {
   coinIdOf,
   paymasterEndpoint,
   DEFAULT_NETWORK_ID,
+  ENS_NETWORK_ID,
   NETWORKS,
   withRpcEndpoint,
   type CustomEvmNetworkInput,
+  type EvmNetwork,
   type NetworkConfig,
 } from "../../config/networks.js";
 import { hdAccountId, parseAccountId } from "../account-id.js";
-import { AccountType } from "../../messaging/protocol.js";
+import { AccountType, ChainKind } from "../../messaging/protocol.js";
 import type { Settings, SettingsStorage, TokenConfig } from "../../platform/settings-storage.js";
 
 const DEFAULTS: Settings = {
@@ -91,6 +93,22 @@ export class SettingsService {
 
   activeNetwork(): NetworkConfig {
     return this.network(this.#settings.activeNetworkId);
+  }
+
+  /**
+   * The network ENS names resolve against — L1, whatever the active network
+   * is (see `ENS_NETWORK_ID`). Taken from `allNetworks` rather than from the
+   * static list so a user's custom RPC for that chain is honoured here too:
+   * someone who set their own Ethereum endpoint because the public one is
+   * rate limited should get name resolution through it as well.
+   *
+   * `null` when this build has no such network, which is a real possibility
+   * for a fork that ships a different network list — callers must treat name
+   * resolution as unavailable rather than assume it exists.
+   */
+  ensNetwork(): EvmNetwork | null {
+    const network = this.allNetworks().find((entry) => entry.id === ENS_NETWORK_ID);
+    return network?.kind === ChainKind.Evm ? network : null;
   }
 
   isCustomNetwork(id: string): boolean {

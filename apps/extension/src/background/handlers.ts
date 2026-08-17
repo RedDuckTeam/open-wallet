@@ -406,7 +406,13 @@ export function registerHandlers({
 
   on(Message.resolveRecipient, async ({ data }) => {
     noteActivity();
-    return { address: await chains.resolveRecipient(settings.activeNetwork(), data.value) };
+    // ENS is resolved on L1, not on the active network — see `ENS_NETWORK_ID`.
+    const address = await chains.resolveRecipient(
+      settings.activeNetwork(),
+      data.value,
+      settings.ensNetwork(),
+    );
+    return { address };
   });
 
   /**

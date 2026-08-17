@@ -155,6 +155,19 @@ export const NETWORKS: readonly NetworkConfig[] = [
 // Sepolia by default, so send/receive works with free faucet funds.
 export const DEFAULT_NETWORK_ID = "sepolia";
 
+/**
+ * The network whose ENS registry every EVM name is resolved against.
+ *
+ * ENS is an L1 registry: the contracts live on Ethereum and are not deployed
+ * on Base, Arbitrum, or any other L2. Resolving against whichever network
+ * happens to be active would therefore work on Ethereum and Sepolia and
+ * silently fail everywhere else — so resolution is pinned to L1 regardless of
+ * the active network, the same thing MetaMask does. The answer is valid
+ * across chains because an ENS record holds a plain EVM address, which means
+ * the same thing on every EVM network.
+ */
+export const ENS_NETWORK_ID = "ethereum";
+
 const CUSTOM_NETWORK_COLOR = "#6B7280";
 
 // A user-imported EVM network, as persisted in settings.
