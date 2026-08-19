@@ -3,10 +3,12 @@ import { ChainKind, type SwapQuoteView } from "../../apps/extension/src/messagin
 import { createSwapService } from "../../apps/extension/src/background/swap.js";
 import type { SmartAccountService } from "../../apps/extension/src/background/smart-account.js";
 
-const SLIPPAGE = 0.005;
+const SLIPPAGE = 0.007;
 
+// Every test drives the service with the same fixed slippage provider, so an
+// assertion on the outgoing request proves the setting actually travels.
 function createSwapService3(backend: BackendClient): ReturnType<typeof createSwapService> {
-  return createSwapService(backend, {} as SmartAccountService);
+  return createSwapService(backend, {} as SmartAccountService, () => SLIPPAGE);
 }
 import type { BackendClient } from "../../apps/extension/src/background/adapters/backend.js";
 import type {

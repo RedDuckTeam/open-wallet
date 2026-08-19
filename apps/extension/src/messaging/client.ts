@@ -43,6 +43,8 @@ export const walletApi = {
   getFeeReserve: (intent: "transfer" | "swap") => sendMessage(Message.getFeeReserve, { intent }),
 
   swapTokens: (query: string) => sendMessage(Message.swapTokens, { query }),
+  getSwapSlippage: () => sendMessage(Message.getSwapSlippage, undefined),
+  setSwapSlippage: (pct: number) => sendMessage(Message.setSwapSlippage, { pct }),
   getSwapQuote: (from: SwapTokenRef, to: SwapTokenRef, amount: string) =>
     sendMessage(Message.getSwapQuote, { from, to, amount }),
   executeSwap: (execution: SwapExecutionView) => sendMessage(Message.executeSwap, { execution }),

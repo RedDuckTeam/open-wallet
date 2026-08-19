@@ -17,6 +17,7 @@ import { createSmartAccountService } from "../src/background/smart-account.js";
 import { createNftService } from "../src/background/nfts.js";
 import { createSwapService } from "../src/background/swap.js";
 import { registerDapp } from "../src/background/dapp/register.js";
+import { sanitizeSlippagePct, slippageFraction } from "../src/slippage.js";
 import { registerHandlers } from "../src/background/handlers.js";
 
 // Composition root: register every chain's CoinEntry with the keyring, build the
@@ -41,7 +42,9 @@ export default defineBackground(() => {
     new CoinGeckoPriceProvider(),
   ]);
   const smartAccounts = createSmartAccountService(settings);
-  const swap = createSwapService(backend, smartAccounts);
+  const swap = createSwapService(backend, smartAccounts, () =>
+    slippageFraction(sanitizeSlippagePct(settings.slippagePct)),
+  );
   const nfts = createNftService(settings, backend);
   const dapp = registerDapp({ wallet, settings, smartAccounts });
 

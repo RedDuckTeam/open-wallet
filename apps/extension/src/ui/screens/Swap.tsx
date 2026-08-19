@@ -12,6 +12,12 @@ import {
 } from "../../messaging/protocol.js";
 import { errorMessage } from "../format/error.js";
 import { toBaseUnits } from "../../units.js";
+import {
+  DEFAULT_SLIPPAGE_PCT,
+  HIGH_SLIPPAGE_PCT,
+  SLIPPAGE_PRESETS_PCT,
+  validateSlippagePct,
+} from "../../slippage.js";
 import { formatUnits } from "../format/units.js";
 import { useAssets } from "../state/assets.js";
 import { AmountPanel, TokenPill, maxAmount, useFeeReserve } from "../components/amount.js";
@@ -76,10 +82,15 @@ function SwapForm({
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [slippagePct, setSlippagePct] = useState(DEFAULT_SLIPPAGE_PCT);
   const quotedAt = useRef(0);
   const reserveWei = useFeeReserve(network.id, "swap");
 
   const from = assets.find((a) => a.id === fromId) ?? assets[0];
+
+  useEffect(() => {
+    void walletApi.getSwapSlippage().then(({ pct }) => setSlippagePct(pct));
+  }, []);
 
   /**
    * A quote is a snapshot of a moving price and its route has a lifetime of
@@ -203,6 +214,17 @@ function SwapForm({
           pill={<ReceivePill token={toToken} onClick={() => setPicking(true)} />}
         />
       </div>
+
+      <SlippageControl
+        pct={slippagePct}
+        onChange={(pct) => {
+          setSlippagePct(pct);
+          // The quote's minimum-received was computed with the old
+          // tolerance — confirming it now would promise the wrong floor.
+          setQuote(null);
+        }}
+        onError={setError}
+      />
 
       {quote ? <QuoteDetails quote={quote} /> : null}
 
@@ -405,6 +427,93 @@ function Done({ result, onDone }: { result: SendResult; onDone: () => void }): R
       <Button className="w-full" onClick={onDone}>
         Swap again
       </Button>
+    </div>
+  );
+}
+
+/**
+ * The slippage tolerance, edited where it takes effect. Presets cover what
+ * almost everyone wants; the custom field takes anything the policy allows
+ * and explains itself when it refuses. Persisted through the background, so
+ * the choice survives popup reopens and applies on both chain families.
+ */
+function SlippageControl({
+  pct,
+  onChange,
+  onError,
+}: {
+  pct: number;
+  onChange: (pct: number) => void;
+  onError: (message: string) => void;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const [custom, setCustom] = useState("");
+
+  const apply = (value: number): void => {
+    let normalized: number;
+    try {
+      normalized = validateSlippagePct(value);
+    } catch (e) {
+      onError(errorMessage(e));
+      return;
+    }
+    setCustom("");
+    void walletApi.setSwapSlippage(normalized).then(
+      ({ pct: saved }) => onChange(saved),
+      (e: unknown) => onError(errorMessage(e)),
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="text-muted-foreground hover:text-foreground flex items-center justify-between text-xs"
+      >
+        <span>Max slippage</span>
+        <span className="font-semibold">
+          {pct}% {open ? "\u25B4" : "\u25BE"}
+        </span>
+      </button>
+
+      {open ? (
+        <>
+          <div className="flex items-center gap-1.5">
+            {SLIPPAGE_PRESETS_PCT.map((preset) => (
+              <Button
+                key={preset}
+                type="button"
+                variant={pct === preset ? "default" : "outline"}
+                size="sm"
+                className="h-7 rounded-full px-3 text-xs"
+                onClick={() => apply(preset)}
+              >
+                {preset}%
+              </Button>
+            ))}
+            <Input
+              value={custom}
+              placeholder="Custom"
+              className="h-7 flex-1 text-center text-xs"
+              onChange={(event) => setCustom(event.target.value.replace(",", "."))}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && custom.trim()) apply(Number(custom));
+              }}
+              onBlur={() => {
+                if (custom.trim()) apply(Number(custom));
+              }}
+            />
+          </div>
+          {pct >= HIGH_SLIPPAGE_PCT ? (
+            <p className="text-muted-foreground text-[11.5px]">
+              High slippage lets the price move {pct}% against you before the swap reverts — more
+              room for a worse fill.
+            </p>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }

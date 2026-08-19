@@ -31,6 +31,7 @@ import {
 import { createAutoLock } from "./auto-lock.js";
 import { hdAccountId, importedAccountId, parseAccountId } from "./account-id.js";
 import { resolveActiveSigner, type ActiveSigner } from "./active-signer.js";
+import { sanitizeSlippagePct, validateSlippagePct } from "../slippage.js";
 import { nativeIconUrl, tokenIconUrl } from "./icons.js";
 import { toWalletError } from "./errors.js";
 import type { ChainService, TransferRequest } from "./chains.js";
@@ -461,6 +462,17 @@ export function registerHandlers({
   on(Message.swapTokens, async ({ data }) => {
     noteActivity();
     return swap.tokens(settings.activeNetwork(), data.query);
+  });
+
+  on(Message.getSwapSlippage, () => ({ pct: sanitizeSlippagePct(settings.slippagePct) }));
+
+  on(Message.setSwapSlippage, async ({ data }) => {
+    noteActivity();
+    // Validated here, not trusted from the popup: the thrown message is
+    // written for the user and crosses the wire as a WalletError.
+    const pct = validateSlippagePct(data.pct);
+    await settings.setSlippagePct(pct);
+    return { pct };
   });
 
   on(Message.getSwapQuote, async ({ data }) => {

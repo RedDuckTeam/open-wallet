@@ -46,6 +46,10 @@ export interface Settings {
   // default because a manually added NFT was explicitly asked for; the toggle
   // exists for anyone who doesn't want the requests at all.
   displayNftMedia: boolean;
+  // Max swap slippage in percent (0.5 means 0.5%). Bounds live in
+  // background/slippage.ts; stored raw and sanitized on read, so a blob from
+  // another build degrades to the default instead of failing to load.
+  slippagePct: number;
   // Which smart-account implementation to use, as a SmartAccountKind value.
   // Stored as a plain string: it crosses into persistence, and a settings
   // blob written by a build that knew one more kind must not fail to load.

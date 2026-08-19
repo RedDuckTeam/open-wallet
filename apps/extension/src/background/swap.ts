@@ -33,7 +33,6 @@ import type { ActiveSigner } from "./active-signer.js";
 import type { SmartAccountService } from "./smart-account.js";
 import type { BackendClient } from "./adapters/backend.js";
 
-const DEFAULT_SLIPPAGE = 0.005;
 const TOKEN_LIMIT = 50;
 /** How long a mined approval is waited for before the swap is called off. */
 const RECEIPT_TIMEOUT_MS = 120_000;
@@ -100,6 +99,12 @@ function requireSolana(network: NetworkConfig): SolanaNetwork {
 export function createSwapService(
   backend: BackendClient,
   smartAccounts: SmartAccountService,
+  /**
+   * The user's slippage tolerance as a fraction (0.005 for 0.5%), read per
+   * call so a change in settings applies to the very next quote. Validated
+   * and sanitized by the caller — see `background/slippage.ts`.
+   */
+  slippage: () => number,
 ): SwapService {
   // Keyless: only used when the backend itself doesn't answer.
   const directLifi = new LifiClient();
@@ -141,7 +146,7 @@ export function createSwapService(
         fromToken: src,
         toToken: dst,
         fromAmount,
-        slippage: DEFAULT_SLIPPAGE,
+        slippage: slippage(),
       };
       try {
         return await backend.swapQuote(request);
@@ -160,7 +165,7 @@ export function createSwapService(
         fromToken: src,
         toToken: dst,
         fromAmount,
-        slippage: DEFAULT_SLIPPAGE,
+        slippage: slippage(),
       };
       try {
         return await backend.solanaSwapQuote(request);
