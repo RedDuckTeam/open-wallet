@@ -13,6 +13,7 @@ import {
   type NetworkConfig,
 } from "../../config/networks.js";
 import { hdAccountId, parseAccountId } from "../account-id.js";
+import { DEFAULT_SLIPPAGE_PCT } from "../../slippage.js";
 import { AccountType, ChainKind } from "../../messaging/protocol.js";
 import type { Settings, SettingsStorage, TokenConfig } from "../../platform/settings-storage.js";
 
@@ -30,6 +31,7 @@ const DEFAULTS: Settings = {
   autodetectNfts: false,
   displayNftMedia: true,
   smartAccountKind: SmartAccountKind.Simple7702,
+  slippagePct: DEFAULT_SLIPPAGE_PCT,
 };
 
 // Contract addresses are case-insensitive; token ids are decimal strings and
@@ -238,6 +240,15 @@ export class SettingsService {
 
   async setSmartAccountKind(kind: SmartAccountKind): Promise<void> {
     await this.#update({ smartAccountKind: kind });
+  }
+
+  get slippagePct(): number {
+    return this.#settings.slippagePct;
+  }
+
+  /** Stores an already-validated value — bounds are the caller's job (`validateSlippagePct`). */
+  async setSlippagePct(pct: number): Promise<void> {
+    await this.#update({ slippagePct: pct });
   }
 
   async setBundler(id: string, url: string): Promise<void> {

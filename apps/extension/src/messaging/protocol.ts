@@ -356,6 +356,10 @@ export interface ProtocolMap {
 
   // Swaps (same-chain: LI.FI on EVM, Jupiter on Solana)
   swapTokens(input: { query: string }): SwapTokenView[];
+  // Percent (0.5 means 0.5%), validated against the bounds in
+  // background/slippage.ts; set echoes the normalized value back.
+  getSwapSlippage(): { pct: number };
+  setSwapSlippage(input: { pct: number }): { pct: number };
   getSwapQuote(input: { from: SwapTokenRef; to: SwapTokenRef; amount: string }): SwapQuoteView;
   executeSwap(input: { execution: SwapExecutionView }): SendResult;
 
@@ -457,6 +461,8 @@ export const Message = {
   send: "send",
   getFeeReserve: "getFeeReserve",
   swapTokens: "swapTokens",
+  getSwapSlippage: "getSwapSlippage",
+  setSwapSlippage: "setSwapSlippage",
   getSwapQuote: "getSwapQuote",
   executeSwap: "executeSwap",
   getSmartAccount: "getSmartAccount",
