@@ -40,6 +40,16 @@ const COPY: Record<WalletErrorCode, PresentedError> = {
     message: "Not enough balance to cover the amount plus the network fee.",
     tone: "error",
   },
+  [WalletErrorCode.SlippageExceeded]: {
+    title: "Price moved",
+    message: "The price moved beyond your slippage tolerance. Get a fresh quote and try again.",
+    tone: "warning",
+  },
+  [WalletErrorCode.QuoteExpired]: {
+    title: "Quote expired",
+    message: "This quote is no longer valid. Get a fresh one and try again.",
+    tone: "warning",
+  },
   [WalletErrorCode.FeeTooLow]: {
     title: "Fee too low",
     message: "The network fee is too low right now. Try again in a moment.",

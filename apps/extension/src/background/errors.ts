@@ -36,6 +36,22 @@ const MESSAGE_PATTERNS: readonly (readonly [RegExp, WalletErrorCode])[] = [
     WalletErrorCode.GasEstimationFailed,
   ],
   [/fee too low|min relay fee|dust/i, WalletErrorCode.FeeTooLow],
+  // Jupiter's router reports a violated minimum-out as custom program error
+  // 0x1771 in preflight logs; its decimal form always travels with the word
+  // "slippage" in tooling output, so no bare number is matched. EVM routers
+  // revert with prose of their own.
+  [
+    /slippage|0x1771|too little received|insufficient output amount|return amount is not enough/i,
+    WalletErrorCode.SlippageExceeded,
+  ],
+  // A Solana transaction dies with its blockhash (~1 minute); an EVM route's
+  // deadline can pass too. Deliberately narrow phrases: a bare /expired/
+  // would swallow unrelated failures, and "deadline exceeded" alone is
+  // gRPC's word for an ordinary timeout, which must stay Timeout below.
+  [
+    /blockhash not found|block height exceeded|transaction expired|transaction too old|expired deadline/i,
+    WalletErrorCode.QuoteExpired,
+  ],
   [/rate limit|too many requests|\b429\b|access forbidden|\b403\b/i, WalletErrorCode.RateLimited],
   [/timed out|timeout|deadline exceeded/i, WalletErrorCode.Timeout],
   [

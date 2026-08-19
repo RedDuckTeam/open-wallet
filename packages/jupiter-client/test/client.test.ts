@@ -10,6 +10,7 @@ const QUOTE_ROUTE = {
   outAmount: "150000000",
   otherAmountThreshold: "149000000",
   slippageBps: 50,
+  priceImpactPct: "0.0421",
 };
 
 const SWAP_BUILD = {
@@ -30,31 +31,30 @@ const params = {
   slippage: 0.005,
 };
 
-function stubFetch(): void {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string | URL, init?: RequestInit) => {
-      const u = String(url);
-      if (u.includes("/swap/v1/quote")) {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(QUOTE_ROUTE) });
-      }
-      if (u.includes("/tokens/v2/search")) {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(TOKEN_META) });
-      }
-      if (u.includes("/swap/v1/swap") && init?.method === "POST") {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(SWAP_BUILD) });
-      }
-      throw new Error(`unexpected fetch: ${u}`);
-    }),
-  );
+function stubFetch(): ReturnType<typeof vi.fn> {
+  const mock = vi.fn((url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.includes("/swap/v1/quote")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(QUOTE_ROUTE) });
+    }
+    if (u.includes("/tokens/v2/search")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(TOKEN_META) });
+    }
+    if (u.includes("/swap/v1/swap") && init?.method === "POST") {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(SWAP_BUILD) });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  vi.stubGlobal("fetch", mock);
+  return mock;
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("JupiterClient", () => {
-  it("maps a route + token metadata + built tx to a quote", async () => {
+describe("JupiterClient.quote", () => {
+  it("maps a route + token metadata to a quote holding the raw route", async () => {
     stubFetch();
 
     const quote = await new JupiterClient().quote(params);
@@ -68,32 +68,42 @@ describe("JupiterClient", () => {
     expect(quote.toDecimals).toBe(6);
     expect(quote.tool).toBe("Jupiter");
     expect(quote.gasUsd).toBeNull();
-    expect(quote.execution).toEqual({ kind: "solana", transactionBase64: "base64-tx-bytes" });
+    expect(quote.priceImpactPct).toBeCloseTo(0.0421);
+    // The execution is the route itself, not a built transaction: building
+    // is deferred to confirmation time so the blockhash can't expire while
+    // the user reads the quote.
+    expect(quote.execution).toEqual({ kind: "solana", route: QUOTE_ROUTE });
   });
 
-  it("sends slippage as basis points and the user's pubkey to /swap", async () => {
-    let quoteUrl = "";
-    let swapBody: unknown;
+  it("does not call /swap at quote time", async () => {
+    const mock = stubFetch();
+    await new JupiterClient().quote(params);
+    const posted = mock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "POST");
+    expect(posted).toHaveLength(0);
+  });
+
+  it("sends slippage as basis points", async () => {
+    const mock = stubFetch();
+    await new JupiterClient().quote(params);
+    const quoteCall = mock.mock.calls.map(([url]) => String(url)).find((u) => u.includes("/quote"));
+    expect(quoteCall).toContain("slippageBps=50");
+  });
+
+  it("reports a missing price impact as null rather than 0", async () => {
+    const routeWithout: Record<string, unknown> = { ...QUOTE_ROUTE };
+    delete routeWithout.priceImpactPct;
     vi.stubGlobal(
       "fetch",
-      vi.fn((url: string | URL, init?: RequestInit) => {
+      vi.fn((url: string | URL) => {
         const u = String(url);
-        if (u.includes("/swap/v1/quote")) {
-          quoteUrl = u;
-          return Promise.resolve({ ok: true, json: () => Promise.resolve(QUOTE_ROUTE) });
+        if (u.includes("/quote")) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(routeWithout) });
         }
-        if (u.includes("/tokens/v2/search")) {
-          return Promise.resolve({ ok: true, json: () => Promise.resolve(TOKEN_META) });
-        }
-        swapBody = JSON.parse(init?.body as string);
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(SWAP_BUILD) });
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(TOKEN_META) });
       }),
     );
-
-    await new JupiterClient().quote(params);
-
-    expect(quoteUrl).toContain("slippageBps=50");
-    expect(swapBody).toMatchObject({ userPublicKey: params.fromAddress });
+    const quote = await new JupiterClient().quote(params);
+    expect(quote.priceImpactPct).toBeNull();
   });
 
   it("throws the API's error message on a failed quote", async () => {
@@ -115,5 +125,43 @@ describe("JupiterClient", () => {
     await expect(new JupiterClient().quote(params)).rejects.toThrow(
       "Input and output mints are not allowed to be equal",
     );
+  });
+
+  it("blames rate limiting, not the route, on a 429 with no body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({ ok: false, status: 429, json: () => Promise.reject(new Error("empty")) }),
+      ),
+    );
+    await expect(new JupiterClient().quote(params)).rejects.toThrow(/rate limiting/i);
+  });
+});
+
+describe("JupiterClient.buildSwapTransaction", () => {
+  it("posts the route and the user's pubkey with a dynamic compute limit", async () => {
+    const mock = stubFetch();
+
+    const tx = await new JupiterClient().buildSwapTransaction(QUOTE_ROUTE, params.fromAddress);
+
+    expect(tx).toBe("base64-tx-bytes");
+    const call = mock.mock.calls.find(([url]) => String(url).includes("/swap/v1/swap"));
+    const init = call?.[1] as RequestInit;
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      quoteResponse: QUOTE_ROUTE,
+      userPublicKey: params.fromAddress,
+      dynamicComputeUnitLimit: true,
+    });
+  });
+
+  it("refuses an empty build response instead of signing nothing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })),
+    );
+    await expect(
+      new JupiterClient().buildSwapTransaction(QUOTE_ROUTE, params.fromAddress),
+    ).rejects.toThrow(/no transaction/i);
   });
 });

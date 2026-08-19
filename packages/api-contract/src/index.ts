@@ -20,4 +20,6 @@ export {
   SwapQuoteResponse,
   SwapQuoteQuery,
   SolanaSwapQuoteQuery,
+  SolanaSwapBuildRequest,
+  SolanaSwapBuildResponse,
 } from "./swap.js";
