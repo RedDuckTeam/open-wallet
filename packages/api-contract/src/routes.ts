@@ -9,4 +9,5 @@ export const API_ROUTES = {
   pricesTokens: "/v1/prices/tokens",
   swapQuote: "/v1/swap/quote",
   swapQuoteSolana: "/v1/swap/quote/solana",
+  swapBuildSolana: "/v1/swap/build/solana",
 } as const;

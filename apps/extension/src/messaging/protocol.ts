@@ -45,6 +45,8 @@ export const WalletErrorCode = {
   Locked: "locked",
   // Funds / transaction
   InsufficientFunds: "insufficient-funds",
+  SlippageExceeded: "slippage-exceeded",
+  QuoteExpired: "quote-expired",
   FeeTooLow: "fee-too-low",
   NonceTooLow: "nonce-too-low",
   TxUnderpriced: "tx-underpriced",
@@ -352,7 +354,7 @@ export interface ProtocolMap {
   // Native base units to keep in reserve for gas (for the "Max" button).
   getFeeReserve(input: { intent: "transfer" | "swap" }): { reserveWei: string };
 
-  // Swaps (same-chain, EVM only for now)
+  // Swaps (same-chain: LI.FI on EVM, Jupiter on Solana)
   swapTokens(input: { query: string }): SwapTokenView[];
   getSwapQuote(input: { from: SwapTokenRef; to: SwapTokenRef; amount: string }): SwapQuoteView;
   executeSwap(input: { execution: SwapExecutionView }): SendResult;

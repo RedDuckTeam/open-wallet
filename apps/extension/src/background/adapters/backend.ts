@@ -2,6 +2,7 @@ import {
   API_ROUTES,
   NativePriceResponse,
   NftListResponse,
+  SolanaSwapBuildResponse,
   SolanaTokenListResponse,
   SwapQuoteResponse,
   TokenListResponse,
@@ -82,6 +83,18 @@ export class BackendClient {
     }).then((r) => r.tokens);
   }
 
+  /**
+   * Turns a previously quoted Solana route into a signable transaction.
+   * Called at confirmation time, not quote time — the result embeds a fresh
+   * blockhash and is only valid for about a minute.
+   */
+  buildSolanaSwap(route: Record<string, unknown>, userPublicKey: string): Promise<string> {
+    return this.#post(SolanaSwapBuildResponse, API_ROUTES.swapBuildSolana, {
+      route,
+      userPublicKey,
+    }).then((r) => r.transactionBase64);
+  }
+
   solanaSwapQuote(request: SolanaSwapQuoteRequest): Promise<SwapQuote> {
     return this.#get(SwapQuoteResponse, API_ROUTES.swapQuoteSolana, {
       fromAddress: request.fromAddress,
@@ -90,6 +103,16 @@ export class BackendClient {
       fromAmount: request.fromAmount,
       slippage: String(request.slippage),
     });
+  }
+
+  async #post<T>(schema: { parse(value: unknown): T }, path: string, body: unknown): Promise<T> {
+    const response = await fetch(new URL(path, this.baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw await httpError(response);
+    return schema.parse(await response.json());
   }
 
   async #get<T>(

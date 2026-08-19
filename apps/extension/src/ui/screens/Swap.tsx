@@ -3,6 +3,7 @@ import { ArrowDown, ArrowLeft, CheckCircle2, ChevronDown, Search } from "lucide-
 import { walletApi } from "../../messaging/client.js";
 import {
   NATIVE_ASSET_ID,
+  WalletErrorCode,
   type AssetView,
   type NetworkView,
   type SendResult,
@@ -10,6 +11,7 @@ import {
   type SwapTokenView,
 } from "../../messaging/protocol.js";
 import { errorMessage } from "../format/error.js";
+import { toBaseUnits } from "../../units.js";
 import { formatUnits } from "../format/units.js";
 import { useAssets } from "../state/assets.js";
 import { AmountPanel, TokenPill, maxAmount, useFeeReserve } from "../components/amount.js";
@@ -18,6 +20,8 @@ import { Button } from "../components/shadcn/button.js";
 import { Card } from "../components/shadcn/card.js";
 import { Input } from "../components/shadcn/input.js";
 import { Separator } from "../components/shadcn/separator.js";
+
+const QUOTE_TTL_MS = 60_000;
 
 function Header(): React.ReactElement {
   return (
@@ -72,9 +76,30 @@ function SwapForm({
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const quotedAt = useRef(0);
   const reserveWei = useFeeReserve(network.id, "swap");
 
   const from = assets.find((a) => a.id === fromId) ?? assets[0];
+
+  /**
+   * A quote is a snapshot of a moving price and its route has a lifetime of
+   * its own (a Solana blockhash lives about a minute) — after 60s it is
+   * withdrawn rather than left looking confirmable. Skipped once a result is
+   * up: that route is already spent, and expiring it behind the success
+   * screen would greet the user with a stale error.
+   */
+  useEffect(() => {
+    if (!quote || result) return;
+    const remaining = quotedAt.current + QUOTE_TTL_MS - Date.now();
+    const timer = setTimeout(
+      () => {
+        setQuote(null);
+        setError("The quote expired. Prices move — get a fresh one.");
+      },
+      Math.max(0, remaining),
+    );
+    return () => clearTimeout(timer);
+  }, [quote, result]);
 
   if (result) {
     return (
@@ -106,15 +131,22 @@ function SwapForm({
     setError(null);
     if (!from || !toToken) return setError("Pick a token to swap to.");
     if (!(Number(amount) > 0)) return setError("Enter an amount greater than 0.");
+    // The same exact base-unit comparison the send screen makes: a lossy
+    // float comparison could disagree with the swap itself right at the
+    // balance boundary, and an aggregator error about funds is far less
+    // clear than saying it here.
+    if (toBaseUnits(amount, from.decimals) > BigInt(from.balanceWei)) {
+      return setError("Amount exceeds your balance.");
+    }
     setBusy(true);
     try {
-      setQuote(
-        await walletApi.getSwapQuote(
-          { address: from.address, decimals: from.decimals },
-          { address: toToken.address, decimals: toToken.decimals },
-          amount,
-        ),
+      const fresh = await walletApi.getSwapQuote(
+        { address: from.address, decimals: from.decimals },
+        { address: toToken.address, decimals: toToken.decimals },
+        amount,
       );
+      quotedAt.current = Date.now();
+      setQuote(fresh);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -131,6 +163,13 @@ function SwapForm({
       reload();
     } catch (e) {
       setError(errorMessage(e));
+      // A slippage or expiry failure means this exact route is spent —
+      // retrying it can only fail again, so the quote is withdrawn and the
+      // button goes back to "Get quote".
+      const code = (e as { code?: string }).code;
+      if (code === WalletErrorCode.SlippageExceeded || code === WalletErrorCode.QuoteExpired) {
+        setQuote(null);
+      }
     } finally {
       setBusy(false);
     }
@@ -290,24 +329,42 @@ function TokenSearch({
   );
 }
 
+/** Past this, the shortfall against market price stops being noise and deserves a warning. */
+const PRICE_IMPACT_WARN_PCT = 5;
+
 function QuoteDetails({ quote }: { quote: SwapQuoteView }): React.ReactElement {
+  const impact = quote.priceImpactPct;
   return (
-    <Card className="gap-0 py-0">
-      <Row label="Rate" value={`1 ${quote.fromSymbol} ≈ ${rate(quote)} ${quote.toSymbol}`} />
-      <Separator />
-      <Row
-        label="Min received"
-        value={`${formatUnits(quote.toAmountMin, quote.toDecimals)} ${quote.toSymbol}`}
-      />
-      <Separator />
-      <Row label="Route" value={quote.tool} />
-      {quote.gasUsd !== null ? (
-        <>
-          <Separator />
-          <Row label="Network fee" value={`~$${quote.gasUsd.toFixed(2)}`} />
-        </>
+    <>
+      <Card className="gap-0 py-0">
+        <Row label="Rate" value={`1 ${quote.fromSymbol} ≈ ${rate(quote)} ${quote.toSymbol}`} />
+        <Separator />
+        <Row
+          label="Min received"
+          value={`${formatUnits(quote.toAmountMin, quote.toDecimals)} ${quote.toSymbol}`}
+        />
+        <Separator />
+        <Row label="Route" value={quote.tool} />
+        {impact !== null ? (
+          <>
+            <Separator />
+            <Row label="Price impact" value={`${impact < 0.01 ? "< 0.01" : impact.toFixed(2)}%`} />
+          </>
+        ) : null}
+        {quote.gasUsd !== null ? (
+          <>
+            <Separator />
+            <Row label="Network fee" value={`~$${quote.gasUsd.toFixed(2)}`} />
+          </>
+        ) : null}
+      </Card>
+      {impact !== null && impact >= PRICE_IMPACT_WARN_PCT ? (
+        <Callout tone="error">
+          This trade moves the price by about {impact.toFixed(1)}% — you receive markedly less than
+          the market rate. Usually a sign the pool is too thin for this amount.
+        </Callout>
       ) : null}
-    </Card>
+    </>
   );
 }
 

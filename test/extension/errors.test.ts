@@ -22,6 +22,19 @@ describe("toWalletError", () => {
     );
   });
 
+  it("classifies swap-specific failures", () => {
+    // Jupiter's on-chain slippage failure surfaces as a custom program
+    // error in the preflight logs; EVM routers say it in prose.
+    expect(codeOf(new Error("custom program error: 0x1771"))).toBe(
+      WalletErrorCode.SlippageExceeded,
+    );
+    expect(codeOf(new Error("Slippage tolerance exceeded"))).toBe(WalletErrorCode.SlippageExceeded);
+    expect(codeOf(new Error("Blockhash not found"))).toBe(WalletErrorCode.QuoteExpired);
+    // gRPC's phrase for an ordinary timeout — must NOT read as an expired
+    // quote, which is why the QuoteExpired patterns avoid bare "deadline".
+    expect(codeOf(new Error("deadline exceeded"))).toBe(WalletErrorCode.Timeout);
+  });
+
   it("classifies connectivity failures", () => {
     expect(codeOf(new TypeError("Failed to fetch"))).toBe(WalletErrorCode.NetworkError);
     expect(codeOf(new Error('403 : {"message":"Access forbidden"}'))).toBe(

@@ -1,7 +1,9 @@
-import { Controller, Get, Query } from "@nestjs/common";
+import { Body, Controller, Get, Post, Query } from "@nestjs/common";
 import {
+  SolanaSwapBuildRequest,
   SolanaSwapQuoteQuery,
   SwapQuoteQuery,
+  type SolanaSwapBuildResponse,
   type SwapQuoteResponse,
 } from "@openwallet/api-contract";
 import type { z } from "zod";
@@ -25,5 +27,15 @@ export class SwapController {
     query: z.infer<typeof SolanaSwapQuoteQuery>,
   ): Promise<SwapQuoteResponse> {
     return this.swap.quoteSolana(query);
+  }
+
+  // POST rather than GET: the route object is arbitrary aggregator JSON and
+  // does not survive a query string.
+  @Post("build/solana")
+  buildSolana(
+    @Body(new ZodValidationPipe(SolanaSwapBuildRequest))
+    body: z.infer<typeof SolanaSwapBuildRequest>,
+  ): Promise<SolanaSwapBuildResponse> {
+    return this.swap.buildSolana(body.route, body.userPublicKey);
   }
 }
