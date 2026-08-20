@@ -4,6 +4,7 @@
 export { API_ROUTES } from "./routes.js";
 export { TokenInfo, TokenListResponse, TokenListQuery, TokenSearchQuery } from "./tokens.js";
 export { SolanaTokenInfo, SolanaTokenListResponse, SolanaTokenSearchQuery } from "./tokens.js";
+export { NftInfo, NftListResponse, NftListQuery } from "./nfts.js";
 export {
   NativePriceQuery,
   NativePriceResponse,
@@ -19,4 +20,6 @@ export {
   SwapQuoteResponse,
   SwapQuoteQuery,
   SolanaSwapQuoteQuery,
+  SolanaSwapBuildRequest,
+  SolanaSwapBuildResponse,
 } from "./swap.js";

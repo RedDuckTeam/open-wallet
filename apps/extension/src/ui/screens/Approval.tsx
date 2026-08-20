@@ -173,9 +173,69 @@ function Details({ request }: { request: DappRequestView }): React.ReactElement 
           ) : null}
         </Card>
       );
+    case DappRequestKind.SendCalls:
+      return <Batch request={request} />;
     default:
       return <></>;
   }
+}
+
+/**
+ * A batch is shown call by call, not as one summary line: the whole point of
+ * approving a batch is seeing everything that will run, and an approve-then-swap
+ * pair collapsed into "2 calls" hides exactly the call worth reading.
+ */
+function Batch({ request }: { request: DappRequestView }): React.ReactElement {
+  const batch = request.batch;
+  if (!batch) return <></>;
+  return (
+    <div className="flex flex-col gap-2">
+      {batch.upgradesAccount ? (
+        <Callout tone="info">
+          This also upgrades your account to a smart account, so it can run batched calls. Your
+          address and balance stay the same, and you can revert it later in Settings.
+        </Callout>
+      ) : null}
+      <Card className="gap-0 py-0">
+        <Row label="From" value={truncateAddress(request.account)} mono />
+        <Separator />
+        <Row label="Network" value={request.networkName} />
+        <Separator />
+        <Row
+          label="Max cost"
+          value={
+            batch.sponsored
+              ? "Sponsored"
+              : `${formatUnits(batch.maxCostWei, 18)} ${nativeSymbol(request)}`
+          }
+        />
+        <Separator />
+        {/* Stated plainly because it is the guarantee a batch gives that a
+            sequence of separate transactions cannot: all of it lands, or none. */}
+        <Row label="Execution" value="Atomic — all calls or none" />
+      </Card>
+      {batch.calls.map((call, index) => (
+        <Card className="gap-0 py-0" key={`${call.to ?? ""}-${String(index)}`}>
+          <Row label={`Call ${String(index + 1)}`} value={truncateAddress(call.to ?? "")} mono />
+          {call.value !== "0" ? (
+            <>
+              <Separator />
+              <Row
+                label="Amount"
+                value={`${formatUnits(call.value, 18)} ${nativeSymbol(request)}`}
+              />
+            </>
+          ) : null}
+          {call.data && call.data !== "0x" ? (
+            <>
+              <Separator />
+              <Row label="Data" value={`${call.data.slice(0, 12)}…`} mono />
+            </>
+          ) : null}
+        </Card>
+      ))}
+    </div>
+  );
 }
 
 function Row({
@@ -236,6 +296,8 @@ function title(kind: DappRequestKind): string {
       return "Signature request";
     case DappRequestKind.SendTransaction:
       return "Confirm transaction";
+    case DappRequestKind.SendCalls:
+      return "Confirm batch";
     case DappRequestKind.SwitchChain:
       return "Switch network";
     default:
@@ -248,6 +310,7 @@ function actionLabel(kind: DappRequestKind): string {
     case DappRequestKind.Connect:
       return "Connect";
     case DappRequestKind.SendTransaction:
+    case DappRequestKind.SendCalls:
       return "Confirm";
     case DappRequestKind.SwitchChain:
       return "Switch";

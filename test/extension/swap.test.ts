@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChainKind, type SwapQuoteView } from "../../apps/extension/src/messaging/protocol.js";
 import { createSwapService } from "../../apps/extension/src/background/swap.js";
+import type { SmartAccountService } from "../../apps/extension/src/background/smart-account.js";
+
+const SLIPPAGE = 0.007;
+
+// Every test drives the service with the same fixed slippage provider, so an
+// assertion on the outgoing request proves the setting actually travels.
+function createSwapService3(backend: BackendClient): ReturnType<typeof createSwapService> {
+  return createSwapService(backend, {} as SmartAccountService, () => SLIPPAGE);
+}
 import type { BackendClient } from "../../apps/extension/src/background/adapters/backend.js";
 import type {
   BitcoinNetwork,
@@ -75,7 +84,7 @@ afterEach(() => {
 describe("createSwapService#getQuote (EVM)", () => {
   it("uses the backend's quote when it succeeds", async () => {
     const swapQuote = vi.fn().mockResolvedValue(QUOTE);
-    const swap = createSwapService(backendWith({ swapQuote }));
+    const swap = createSwapService3(backendWith({ swapQuote }));
 
     const result = await swap.getQuote(
       EVM_NETWORK,
@@ -92,13 +101,13 @@ describe("createSwapService#getQuote (EVM)", () => {
       fromToken: "0xFromToken",
       toToken: "0xToToken",
       fromAmount: "1000000000000000000",
-      slippage: 0.005,
+      slippage: SLIPPAGE,
     });
   });
 
   it("resolves a null (native) token to the zero address", async () => {
     const swapQuote = vi.fn().mockResolvedValue(QUOTE);
-    const swap = createSwapService(backendWith({ swapQuote }));
+    const swap = createSwapService3(backendWith({ swapQuote }));
 
     await swap.getQuote(EVM_NETWORK, "0xFrom", null, "0xToToken", "1000000000000000000");
 
@@ -109,7 +118,7 @@ describe("createSwapService#getQuote (EVM)", () => {
 
   it("falls back to calling LI.FI directly when the backend is unreachable", async () => {
     const swapQuote = vi.fn().mockRejectedValue(new Error("backend down"));
-    const swap = createSwapService(backendWith({ swapQuote }));
+    const swap = createSwapService3(backendWith({ swapQuote }));
 
     vi.stubGlobal(
       "fetch",
@@ -150,6 +159,30 @@ describe("createSwapService#getQuote (EVM)", () => {
   });
 });
 
+describe("createSwapService#getQuote guards", () => {
+  it("rejects a same-token swap before asking backend or aggregator", async () => {
+    const swapQuote = vi.fn();
+    const swap = createSwapService3(backendWith({ swapQuote }));
+
+    // Explicit sentinel vs null-for-native must be caught as the same token,
+    // case-insensitively on EVM — exactly how a user stumbles into it.
+    await expect(
+      swap.getQuote(EVM_NETWORK, "0xFrom", null, "0x0000000000000000000000000000000000000000", "1"),
+    ).rejects.toThrow(/two different tokens/i);
+    expect(swapQuote).not.toHaveBeenCalled();
+  });
+
+  it("rejects swapping a Solana mint into itself, compared exactly", async () => {
+    const solanaSwapQuote = vi.fn();
+    const swap = createSwapService3(backendWith({ solanaSwapQuote }));
+
+    await expect(
+      swap.getQuote(SOLANA_NETWORK, "owner", null, NATIVE_SOL_MINT, "1"),
+    ).rejects.toThrow(/two different tokens/i);
+    expect(solanaSwapQuote).not.toHaveBeenCalled();
+  });
+});
+
 describe("createSwapService#tokens (EVM)", () => {
   it("uses the backend's search results when it succeeds", async () => {
     const searchTokens = vi.fn().mockResolvedValue([
@@ -162,7 +195,7 @@ describe("createSwapService#tokens (EVM)", () => {
         logoUrl: null,
       },
     ]);
-    const swap = createSwapService(backendWith({ searchTokens }));
+    const swap = createSwapService3(backendWith({ searchTokens }));
 
     const result = await swap.tokens(EVM_NETWORK, "usdc");
 
@@ -174,7 +207,7 @@ describe("createSwapService#tokens (EVM)", () => {
 
   it("falls back to fetching LI.FI's token list directly when the backend is unreachable", async () => {
     const searchTokens = vi.fn().mockRejectedValue(new Error("backend down"));
-    const swap = createSwapService(backendWith({ searchTokens }));
+    const swap = createSwapService3(backendWith({ searchTokens }));
 
     vi.stubGlobal(
       "fetch",
@@ -227,7 +260,7 @@ const SOLANA_QUOTE: SwapQuoteView = {
 describe("createSwapService#getQuote (Solana)", () => {
   it("uses the backend's quote when it succeeds", async () => {
     const solanaSwapQuote = vi.fn().mockResolvedValue(SOLANA_QUOTE);
-    const swap = createSwapService(backendWith({ solanaSwapQuote }));
+    const swap = createSwapService3(backendWith({ solanaSwapQuote }));
 
     const result = await swap.getQuote(
       SOLANA_NETWORK,
@@ -243,13 +276,13 @@ describe("createSwapService#getQuote (Solana)", () => {
       fromToken: NATIVE_SOL_MINT,
       toToken: USDC_MINT,
       fromAmount: "1000000000",
-      slippage: 0.005,
+      slippage: SLIPPAGE,
     });
   });
 
   it("resolves a null (native) token to the wrapped-SOL mint", async () => {
     const solanaSwapQuote = vi.fn().mockResolvedValue(SOLANA_QUOTE);
-    const swap = createSwapService(backendWith({ solanaSwapQuote }));
+    const swap = createSwapService3(backendWith({ solanaSwapQuote }));
 
     await swap.getQuote(SOLANA_NETWORK, "SolanaPubkey", null, USDC_MINT, "1000000000");
 
@@ -260,11 +293,11 @@ describe("createSwapService#getQuote (Solana)", () => {
 
   it("falls back to calling Jupiter directly when the backend is unreachable", async () => {
     const solanaSwapQuote = vi.fn().mockRejectedValue(new Error("backend down"));
-    const swap = createSwapService(backendWith({ solanaSwapQuote }));
+    const swap = createSwapService3(backendWith({ solanaSwapQuote }));
 
     vi.stubGlobal(
       "fetch",
-      vi.fn((url: string | URL, init?: RequestInit) => {
+      vi.fn((url: string | URL) => {
         const u = String(url);
         if (u.includes("/swap/v1/quote")) {
           return Promise.resolve({
@@ -287,12 +320,6 @@ describe("createSwapService#getQuote (Solana)", () => {
               ]),
           });
         }
-        if (init?.method === "POST") {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({ swapTransaction: "direct-base64-tx" }),
-          });
-        }
         throw new Error(`unexpected fetch: ${u}`);
       }),
     );
@@ -308,7 +335,10 @@ describe("createSwapService#getQuote (Solana)", () => {
     expect(solanaSwapQuote).toHaveBeenCalled();
     expect(result.toSymbol).toBe("USDC");
     if (result.execution.kind !== "solana") throw new Error("expected a Solana execution");
-    expect(result.execution.transactionBase64).toBe("direct-base64-tx");
+    // The execution carries the route, not a built transaction: the
+    // transaction embeds a blockhash and would expire while the user reads
+    // the quote, so building is deferred to confirmation time.
+    expect(result.execution.route).toMatchObject({ inAmount: "1000000000" });
   });
 });
 
@@ -319,7 +349,7 @@ describe("createSwapService#tokens (Solana)", () => {
       .mockResolvedValue([
         { address: USDC_MINT, symbol: "USDC", name: "USD Coin", decimals: 6, logoUrl: null },
       ]);
-    const swap = createSwapService(backendWith({ searchSolanaTokens }));
+    const swap = createSwapService3(backendWith({ searchSolanaTokens }));
 
     const result = await swap.tokens(SOLANA_NETWORK, "usdc");
 
@@ -331,7 +361,7 @@ describe("createSwapService#tokens (Solana)", () => {
 
   it("falls back to Jupiter's token search directly when the backend is unreachable", async () => {
     const searchSolanaTokens = vi.fn().mockRejectedValue(new Error("backend down"));
-    const swap = createSwapService(backendWith({ searchSolanaTokens }));
+    const swap = createSwapService3(backendWith({ searchSolanaTokens }));
 
     vi.stubGlobal(
       "fetch",
@@ -357,12 +387,12 @@ describe("createSwapService#tokens (Solana)", () => {
 
 describe("createSwapService on Bitcoin (no aggregator)", () => {
   it("tokens() returns an empty list rather than erroring", async () => {
-    const swap = createSwapService(backendWith({}));
+    const swap = createSwapService3(backendWith({}));
     expect(await swap.tokens(BITCOIN_NETWORK, "usd")).toEqual([]);
   });
 
   it("getQuote() throws a clear 'not supported' error, not a Solana-flavored one", async () => {
-    const swap = createSwapService(backendWith({}));
+    const swap = createSwapService3(backendWith({}));
     await expect(
       swap.getQuote(BITCOIN_NETWORK, "bc1qFrom", null, "bc1qTo", "100000"),
     ).rejects.toThrow("Swaps aren't supported on Bitcoin");

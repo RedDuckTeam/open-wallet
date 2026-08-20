@@ -11,6 +11,13 @@ export const RpcRoute = {
   SignMessage: "signMessage",
   SignTypedData: "signTypedData",
   SendTransaction: "sendTransaction",
+  // EIP-5792: the standard dApp-facing surface for batched/account-abstracted
+  // sends. This is how a dApp uses ERC-4337 through a wallet — not a bespoke
+  // RPC method — so it's what the smart-account path is exposed as.
+  GetCapabilities: "getCapabilities",
+  SendCalls: "sendCalls",
+  GetCallsStatus: "getCallsStatus",
+  ShowCallsStatus: "showCallsStatus",
   Passthrough: "passthrough",
   Unsupported: "unsupported",
 } as const;
@@ -28,11 +35,21 @@ const ROUTES: Readonly<Record<string, RpcRoute>> = {
   eth_signTypedData_v3: RpcRoute.SignTypedData,
   eth_signTypedData_v4: RpcRoute.SignTypedData,
   eth_sendTransaction: RpcRoute.SendTransaction,
+  wallet_getCapabilities: RpcRoute.GetCapabilities,
+  wallet_sendCalls: RpcRoute.SendCalls,
+  wallet_getCallsStatus: RpcRoute.GetCallsStatus,
+  wallet_showCallsStatus: RpcRoute.ShowCallsStatus,
   // Deliberately unsupported: eth_sign is a blind-signing footgun; legacy typed
   // data and add-chain aren't implemented yet.
   eth_sign: RpcRoute.Unsupported,
   eth_signTypedData: RpcRoute.Unsupported,
   wallet_addEthereumChain: RpcRoute.Unsupported,
+  // State-changing, so it must never reach the read-only passthrough below:
+  // an unrouted method falls through to the node, which would let any page
+  // broadcast a pre-signed transaction through the user's RPC without ever
+  // passing an approval screen.
+  eth_sendRawTransaction: RpcRoute.Unsupported,
+  eth_signTransaction: RpcRoute.Unsupported,
 };
 
 export function routeOf(method: string): RpcRoute {
@@ -46,6 +63,7 @@ export function requiresConnection(route: RpcRoute): boolean {
     route === RpcRoute.SwitchChain ||
     route === RpcRoute.SignMessage ||
     route === RpcRoute.SignTypedData ||
-    route === RpcRoute.SendTransaction
+    route === RpcRoute.SendTransaction ||
+    route === RpcRoute.SendCalls
   );
 }

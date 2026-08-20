@@ -12,6 +12,8 @@ const ROUTE = {
     toAmountMin: "495000000000000",
     approvalAddress: "0xRouter",
     gasCosts: [{ amountUSD: "0.12" }],
+    fromAmountUSD: "100.00",
+    toAmountUSD: "99.20",
   },
   toolDetails: { name: "1inch" },
   transactionRequest: { to: "0xRouter", data: "0xdeadbeef", value: "0x0", gasLimit: "0x5208" },
@@ -42,6 +44,8 @@ describe("LifiClient", () => {
     expect(quote.toSymbol).toBe("ETH");
     expect(quote.toAmount).toBe("500000000000000");
     expect(quote.gasUsd).toBe(0.12);
+    // (100 - 99.2) / 100 = 0.8%
+    expect(quote.priceImpactPct).toBeCloseTo(0.8);
     expect(quote.tool).toBe("1inch");
     if (quote.execution.kind !== "evm") throw new Error("expected an EVM execution");
     expect(quote.execution.swapTx).toEqual({
@@ -100,5 +104,30 @@ describe("LifiClient", () => {
 
     await new LifiClient().quote(params);
     expect(String(requestUrl)).toContain("li.quest/v1/quote");
+  });
+});
+
+describe("LifiClient error mapping", () => {
+  it("blames rate limiting, not the route, on a 429 with no message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({ ok: false, status: 429, json: () => Promise.reject(new Error("empty")) }),
+      ),
+    );
+    await expect(new LifiClient("").quote(params)).rejects.toThrow(/rate limiting/i);
+  });
+
+  it("reports a missing USD valuation as null impact rather than 0", async () => {
+    const bareEstimate: Record<string, unknown> = { ...ROUTE.estimate };
+    delete bareEstimate.fromAmountUSD;
+    delete bareEstimate.toAmountUSD;
+    const route = { ...ROUTE, estimate: bareEstimate };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(route) })),
+    );
+    const quote = await new LifiClient("").quote(params);
+    expect(quote.priceImpactPct).toBeNull();
   });
 });

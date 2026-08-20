@@ -1,6 +1,6 @@
 import { browser } from "wxt/browser";
 import type { DappRequestView } from "../../messaging/protocol.js";
-import { RPC_ERROR } from "../../dapp/messages.js";
+import { RPC_ERROR, providerError } from "../../dapp/messages.js";
 
 interface Pending {
   readonly view: DappRequestView;
@@ -10,9 +10,17 @@ interface Pending {
   windowId: number | null;
 }
 
-export function providerError(code: number, message: string): Error & { code: number } {
-  return Object.assign(new Error(message), { code });
-}
+/**
+ * How many requests may await the user at once.
+ *
+ * Every pending request owns a popup window, and nothing stopped a connected
+ * site from calling `personal_sign` in a loop and opening an unbounded number
+ * of them — enough to make the browser unusable and to bury a legitimate
+ * prompt among decoys. Beyond this the request is rejected outright rather
+ * than queued: a dApp that has five unanswered prompts is not waiting on
+ * throughput, it is misbehaving.
+ */
+const MAX_PENDING = 5;
 
 // Holds dApp requests awaiting the user, one approval popup window each. Closing
 // the window without deciding rejects the request, so a dApp call never hangs.
@@ -29,6 +37,11 @@ export class Approvals {
 
   // Opens the approval window and resolves once the user (or the effect) settles.
   request(view: DappRequestView, run: () => Promise<unknown>): Promise<unknown> {
+    if (this.#pending.size >= MAX_PENDING) {
+      return Promise.reject(
+        providerError(RPC_ERROR.Unsupported, "Too many pending OpenWallet requests"),
+      );
+    }
     return new Promise((resolve, reject) => {
       this.#pending.set(view.id, { view, run, resolve, reject, windowId: null });
       void this.#openWindow(view.id);

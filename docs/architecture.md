@@ -7,12 +7,14 @@ with the [README](../README.md)'s Principles section.
 
 ## Package map
 
-Four packages, one dependency direction:
+The core of the workspace is four packages with one dependency direction —
+`chain-* → core`, never the reverse. (Alongside them sit the API contract, two
+aggregator clients, and the two apps; see the README's workspace table.)
 
 | Package                     | Holds                                                                                                                                                                  |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@openwallet/core`          | Mnemonic/KDF/SLIP-10 crypto, `HdKeyring`/`ImportedKeyring`, the encrypted `Vault`, the `Wallet` facade, and the chain-agnostic `ChainAdapter`/`ChainRegistry` contract |
-| `@openwallet/chain-evm`     | EVM address derivation, signing, native + ERC-20 transfers, fee tiers, ENS, speed-up/cancel                                                                            |
+| `@openwallet/chain-evm`     | EVM address derivation, signing, native + ERC-20 transfers, fee tiers, ENS, speed-up/cancel, ERC-4337 account abstraction (`aa/`)                                      |
 | `@openwallet/chain-solana`  | Solana address derivation, signing, native + SPL transfers, fee tiers                                                                                                  |
 | `@openwallet/chain-bitcoin` | Bitcoin (native SegWit) address derivation, PSBT signing, native transfers, RBF, message signing                                                                       |
 
@@ -207,6 +209,197 @@ inconsistency to clean up. A new chain's adapter should define whatever
 `Fees` shape matches its own fee market — copy `FeeTiers` only if the new
 chain's fee market is actually tiered the same way; otherwise define
 something else, the same way Bitcoin does.
+
+## Account abstraction (ERC-4337) lives beside the adapter, not inside it
+
+`packages/chain-evm/src/aa/` implements ERC-4337. It is deliberately **not**
+part of `ChainAdapter`, for the same reason ENS and speed-up/cancel aren't:
+EntryPoints, User Operations and bundlers are an EVM-family concept, and
+forcing them into the one contract Solana and Bitcoin also implement would
+invent an abstraction neither chain has. It's exported directly from
+`@openwallet/chain-evm` instead, and the extension reaches it through its own
+platform seam, `apps/extension/src/background/smart-account.ts`, the
+counterpart of `chains.ts`.
+
+### The signer port exists to preserve invariant 1
+
+viem's smart-account factories take a long-lived `PrivateKeyAccount` and call
+it repeatedly across network round-trips. Handing one a raw key would retire
+invariant 1 (below) for every ERC-4337 path — the key would stay alive for a
+whole session rather than one callback.
+
+So `aa/signer.ts` inverts it. `EvmSigner` is an address, a public key, and
+`withPrivateKey` — the same borrow-shaped capability
+`Wallet.accounts.withPrivateKey` already provides. `toOwnerAccount(signer)`
+builds the object viem wants on top of it, routing every `sign*` method back
+through the callback, so the key materializes only for the microtask of one
+signature. The extension's `ActiveSigner` is the same idea in platform
+vocabulary and adapts to it in `smart-account.ts`.
+
+### Two phases, because viem's one phase re-prices after approval
+
+`sendUserOperation` re-runs `prepareUserOperation` whenever it's given an
+account — which would silently re-price an operation the user already
+approved. `aa/user-operation.ts` therefore splits the flow along the same
+seam the rest of the package uses:
+
+```
+prepareCalls  →  account.signUserOperation  →  sendCalls (no account)
+   build                    sign                     broadcast
+```
+
+`sendCalls` passes no account and a fully-formed, signed operation, so the
+bundler receives exactly the bytes that were approved. `PreparedCalls` is the
+ERC-4337 counterpart of `TransactionSerializableEIP1559`.
+
+### Smart-account kinds are pluggable; EIP-7702 is the default
+
+`aa/account.ts` defines `SmartAccountProvider`, with three implementations —
+`simple7702Provider` (default), `coinbaseProvider`, `soladyProvider`. The
+property callers branch on is `sharesOwnerAddress`, not the vendor:
+
+- **EIP-7702** (`Simple7702`, EntryPoint 0.8): the user's own EOA gains
+  smart-account behaviour. Same address, same balance, nothing to migrate.
+  This is the model MetaMask ships as an opt-in "switch to smart account".
+- **Counterfactual** (Coinbase, Solady): a distinct address derived from the
+  owner, with its own separate balance.
+
+The abstraction isn't speculative: EIP-6551 token-bound accounts are also
+"a smart account whose address is not the signer's address", and plug in here.
+
+`aa/delegation.ts` reads EIP-7702's delegation indicator (`0xef0100 ||
+address`, 23 bytes, unambiguous because EIP-3541 reserves the `0xef` lead
+byte). `SmartAccountInfo` reports `delegatedTo` _and_ `implementation` so a
+caller can distinguish "not upgraded" from "upgraded by a different wallet" —
+a real state the wallet refuses to overwrite.
+
+### Bundlers and paymasters are injected, and user-configurable
+
+`aa/bundler.ts` takes a `BundlerConfig` (`url`, optional ERC-7677
+`paymasterUrl`) rather than hardcoding a provider, following
+`chain-bitcoin/src/providers.ts`. In the extension the endpoint resolves as
+**user override → build-time env (`WXT_BUNDLER_URL`, `{chainId}` placeholder)
+→ none**; these URLs usually carry a provider API key, so they're editable in
+Settings → Smart account, and stored in plain settings rather than the vault
+(a rate-limit credential isn't a fund-moving secret, and vaulting it would
+only stop the wallet reading its own endpoint while locked).
+
+**No bundler means no smart accounts.** Unlike an RPC there's no public
+fallback, so `SmartAccountService.isSupported` reports it as a capability
+rather than failing at send time.
+
+### dApps reach it through EIP-5792, not a bespoke method
+
+`wallet_sendCalls`, `wallet_getCallsStatus`, `wallet_getCapabilities` and
+`wallet_showCallsStatus` are routed in `dapp/rpc-router.ts` and implemented in
+`dapp/provider-service.ts`. The `atomic` capability is answered from the
+account's real on-chain state: `supported` when it already batches, `ready`
+when this wallet can upgrade it on demand, `unsupported` otherwise.
+
+Batch ids are **self-describing** — the User Operation hash followed by the
+chain id, as one opaque hex string (`encodeBatchId`/`decodeBatchId` in
+`dapp/dapp-params.ts`). The obvious `Map<id, operation>` is wrong in an MV3
+extension: the background worker is evicted when idle, which would make every
+in-flight batch a dApp is polling permanently unknown.
+
+## NFTs and EIP-6551
+
+`packages/chain-evm/src/nft/` and `packages/chain-evm/src/tba/` sit beside the
+AA layer, off `ChainAdapter` for the same reason: `TokenOperations` is a
+_fungible-balance_ contract, and an NFT is identified by a token id rather
+than an amount.
+
+- `nft/standard.ts` asks ERC-165 which standard a contract implements instead
+  of probing which call reverts — a revert is ambiguous, and treating an
+  ERC-1155 as an ERC-721 builds a transfer with the wrong signature.
+- `nft/metadata.ts` resolves `ipfs://` (both the bare and legacy `ipfs://ipfs/`
+  forms) and `ar://` to a gateway, and substitutes ERC-1155's `{id}` as 64
+  zero-padded lowercase hex digits, per that standard. Metadata JSON is
+  third-party content, so every field is parsed defensively: one collection
+  shipping a number where a string was expected must not break the list.
+- `nft/transfer.ts` always uses `safeTransferFrom`, so a contract receiver that
+  can't acknowledge the token rejects the transfer instead of trapping it.
+- `tba/registry.ts` reads a token bound account's address from the canonical
+  ERC-6551 registry (`0x000000006551c19487814612e58FE06813775758`, the same
+  address on every chain) rather than re-deriving the CREATE2 locally: a
+  subtly wrong re-derivation's only symptom is funds sent to an address nobody
+  controls.
+- `tba/execute.ts` only ever emits operation `0` (CALL). DELEGATECALL from an
+  account that holds assets hands its storage to arbitrary code.
+
+**Listing is two-sourced.** Standard JSON-RPC has no "what does this address
+own" method — ERC-721 stores `tokenId → owner`, and the reverse mapping exists
+only in an index built from `Transfer` events. So enumeration needs an
+indexer, while reading one _known_ `(contract, tokenId)` is plain `eth_call`
+and always works. `apps/extension/src/background/nfts.ts` combines both, the
+same pairing MetaMask ships as "autodetect + import NFT".
+
+The indexer is a **port**, `apps/api/src/nfts/indexer.ts`, with two
+implementations selected by `NFT_INDEXER`:
+
+| Provider     | Key | Spam filtering | Notes                                            |
+| ------------ | --- | -------------- | ------------------------------------------------ |
+| `alchemy`    | yes | yes            | The class of source MetaMask uses                |
+| `blockscout` | no  | no             | Public instances; the default when no key is set |
+| `none`       | —   | —              | Listing off; manual NFTs still work              |
+
+Note that this does **not** make the API an RPC client — it has never made a
+JSON-RPC call, and an NFT indexer is a plain HTTP API in the same category as
+CoinGecko. A deployment using Alchemy for the extension's RPC still configures
+the NFT key separately: different products, opposite sides of the wire.
+
+Detection is **opt-in** (`autodetectNfts`, default off), because asking an
+indexer what an address holds necessarily discloses that address to it. Image
+loading is a second, separate toggle (`displayNftMedia`), because rendering a
+token's media discloses the viewer's IP to whatever host the collection chose.
+These are the same two switches, with the same rationale, that MetaMask
+ships. The wire carries `indexed: false` when no indexer
+answered, because an unconfigured wallet and an empty one are otherwise
+indistinguishable.
+
+Token ids cross every boundary as decimal **strings** and are `bigint` in
+memory, never `number`: uint256 ids routinely exceed `Number.MAX_SAFE_INTEGER`,
+and a rounded id addresses a different token.
+
+## Where the smart account is actually used
+
+Having the ERC-4337 plumbing is not the same as using it, so the wallet routes
+its own operations through it whenever the account can:
+
+- `Message.send` executes as a single-call User Operation when
+  `SmartAccountService.canBatch` is true, and as a plain transaction otherwise.
+- `swap.ts` batches approve + swap into **one atomic User Operation** on a
+  smart account. As two transactions the approval can land while the swap
+  fails, leaving a standing allowance and nothing to show for it; batched,
+  either both happen or neither does. This is the everyday reason account
+  abstraction earns its place in a wallet.
+
+`canBatch` is true only for an EIP-7702 account already delegated to our
+implementation. It is deliberately false for counterfactual kinds even when
+deployed: there the smart account is a _different address with its own
+balance_, so routing the user's send through it would spend funds other than
+the ones on screen. Upgrading is never a side effect of sending — `canBatch`
+stays false until the user opts in on the Smart account screen.
+
+A dApp's `wallet_sendCalls` may upgrade the account, which is what
+`atomic: "ready"` advertises in the capability response. That is permitted by
+EIP-5792, but it changes the account permanently, so the approval screen says
+so explicitly (`DappBatchView.upgradesAccount`) instead of leaving it implicit.
+
+**Only the EIP-7702 kind is offered in the UI.** The counterfactual providers
+are implemented and tested in `chain-evm`, but everything above the chain layer
+— balances, the receive screen, the accounts list — is single-address. Offering
+an upgrade into an account whose funds the wallet then couldn't show, and whose
+sends `canBatch` would refuse to route, is a dead end; the picker lists them
+with that reason attached rather than pretending otherwise.
+
+`revokeDelegation` (`aa/revoke.ts`) clears a 7702 delegation by authorizing
+the zero address. It is a plain type-4 transaction rather than a User
+Operation: the account is leaving the smart-account world, so routing the exit
+through that machinery would be circular. The authorization is prepared with
+`executor: "self"`, which is load-bearing — when the EOA both signs and sends,
+the authorization nonce must be one ahead of the account nonce, and getting
+that wrong yields an authorization the chain silently ignores.
 
 ## Security invariants
 

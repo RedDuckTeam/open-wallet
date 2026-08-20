@@ -6,11 +6,13 @@ import {
   Globe,
   MoreVertical,
   Plus,
+  RefreshCw,
   Settings,
 } from "lucide-react";
 import { walletApi } from "../../messaging/client.js";
 import {
   AssetKind,
+  ChainKind,
   type AccountView,
   type AssetView,
   type WalletStatus,
@@ -30,7 +32,15 @@ import {
 } from "../components/shadcn/dropdown-menu.js";
 
 export type HomeView =
-  "send" | "receive" | "accounts" | "networks" | "addToken" | "settings" | "connectedSites";
+  | "send"
+  | "receive"
+  | "accounts"
+  | "networks"
+  | "addToken"
+  | "settings"
+  | "smartAccount"
+  | "nfts"
+  | "connectedSites";
 
 // USD value of a holding, or null when it has no price (e.g. testnets).
 function valueUsd(asset: AssetView): number | null {
@@ -55,7 +65,7 @@ export function Home({
   account: AccountView;
   onNav: (view: HomeView) => void;
 }): React.ReactElement {
-  const { assets, error, reload } = useAssets();
+  const { assets, loading, error, reload } = useAssets();
   const total = (assets ?? []).reduce((sum, asset) => sum + (valueUsd(asset) ?? 0), 0);
   const totalIncomplete = (assets ?? []).some(hasMissingPrice);
 
@@ -137,17 +147,47 @@ export function Home({
             <span className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
               Assets
             </span>
-            {status.network.supportsTokens ? (
+            <div className="flex items-center gap-3">
+              {/* Balances refresh on a 20s poll and after every send; this is
+                  for the case the poll can't cover — a transaction that landed
+                  a moment ago, or a reload after an RPC error — so the user
+                  isn't left watching a stale number and guessing. */}
               <Button
-                variant="link"
-                size="sm"
-                className="h-auto p-0"
-                onClick={() => onNav("addToken")}
+                variant="ghost"
+                size="icon"
+                className="text-muted-foreground size-6"
+                onClick={reload}
+                disabled={loading}
+                aria-label="Refresh balances"
+                title="Refresh balances"
               >
-                <Plus />
-                Add token
+                <RefreshCw className={loading ? "animate-spin" : undefined} />
               </Button>
-            ) : null}
+              {/* NFTs live behind their own screen rather than mixed into the
+                  asset list: they're grid-shaped, not row-shaped, and the list
+                  is sorted by USD value, which an NFT doesn't have. */}
+              {status.network.kind === ChainKind.Evm ? (
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0"
+                  onClick={() => onNav("nfts")}
+                >
+                  Collectibles
+                </Button>
+              ) : null}
+              {status.network.supportsTokens ? (
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0"
+                  onClick={() => onNav("addToken")}
+                >
+                  <Plus />
+                  Add token
+                </Button>
+              ) : null}
+            </div>
           </div>
 
           {assets === null ? (

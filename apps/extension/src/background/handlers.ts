@@ -1,13 +1,25 @@
 import { onMessage } from "../messaging/messenger.js";
 import {
+  encodeErc20Transfer,
+  SmartAccountKind,
+  type Call,
+  type PreparedCalls,
+} from "@openwallet/chain-evm";
+import {
   AccountType,
   AssetKind,
+  ChainKind,
   Message,
   NATIVE_ASSET_ID,
   WalletState,
   type AccountView,
   type AssetView,
+  type CallsReceiptView,
   type NetworkView,
+  type NftListView,
+  type NftView,
+  type PreparedCallsView,
+  type SmartAccountView,
 } from "../messaging/protocol.js";
 import {
   coinIdOf,
@@ -19,9 +31,12 @@ import {
 import { createAutoLock } from "./auto-lock.js";
 import { hdAccountId, importedAccountId, parseAccountId } from "./account-id.js";
 import { resolveActiveSigner, type ActiveSigner } from "./active-signer.js";
+import { sanitizeSlippagePct, validateSlippagePct } from "../slippage.js";
 import { nativeIconUrl, tokenIconUrl } from "./icons.js";
 import { toWalletError } from "./errors.js";
 import type { ChainService, TransferRequest } from "./chains.js";
+import type { NftService } from "./nfts.js";
+import type { SmartAccountService } from "./smart-account.js";
 import type { SwapService } from "./swap.js";
 import type { DappModule } from "./dapp/register.js";
 import type { SettingsService } from "./services/settings-service.js";
@@ -32,6 +47,8 @@ import { toBaseUnits } from "../units.js";
 export interface Handlers {
   readonly wallet: WalletService;
   readonly chains: ChainService;
+  readonly smartAccounts: SmartAccountService;
+  readonly nfts: NftService;
   readonly swap: SwapService;
   readonly settings: SettingsService;
   readonly prices: PriceProvider;
@@ -45,7 +62,16 @@ interface NetworkPrices {
 
 // Translates the wire protocol into service calls, composing WalletService,
 // ChainService, SettingsService, the price provider, and auto-lock.
-export function registerHandlers({ wallet, chains, swap, settings, prices, dapp }: Handlers): void {
+export function registerHandlers({
+  wallet,
+  chains,
+  smartAccounts,
+  nfts,
+  swap,
+  settings,
+  prices,
+  dapp,
+}: Handlers): void {
   const autoLock = createAutoLock(() => {
     wallet.lock();
   });
@@ -58,15 +84,20 @@ export function registerHandlers({ wallet, chains, swap, settings, prices, dapp 
   const rethrow = (error: unknown): never => {
     throw toWalletError(error);
   };
+  // Every handler first awaits `wallet.ready()`: after an MV3 worker eviction
+  // the background restarts cold, and a request arriving mid-restore would
+  // otherwise see a locked wallet that is about to unlock itself.
   const on: typeof onMessage = (type, handler) =>
-    onMessage(type, (message) => {
-      try {
-        const result = handler(message);
-        return result instanceof Promise ? result.catch(rethrow) : result;
-      } catch (error) {
-        return rethrow(error);
-      }
-    });
+    onMessage(
+      type,
+      (message) =>
+        // The cast only re-narrows `void` back out of the awaited union: this
+        // returns whatever the handler returns, having first waited for restore.
+        wallet
+          .ready()
+          .then(() => handler(message))
+          .catch(rethrow) as ReturnType<typeof handler>,
+    );
 
   // Revealed HD accounts plus imported ones for this network's coin.
   const accountsForNetwork = (network: NetworkConfig): AccountView[] => {
@@ -376,8 +407,33 @@ export function registerHandlers({ wallet, chains, swap, settings, prices, dapp 
 
   on(Message.resolveRecipient, async ({ data }) => {
     noteActivity();
-    return { address: await chains.resolveRecipient(settings.activeNetwork(), data.value) };
+    // ENS is resolved on L1, not on the active network — see `ENS_NETWORK_ID`.
+    const address = await chains.resolveRecipient(
+      settings.activeNetwork(),
+      data.value,
+      settings.ensNetwork(),
+    );
+    return { address };
   });
+
+  /**
+   * The same transfer expressed as one call for a smart account to execute.
+   * Native value rides in `value`; a token transfer is calldata against the
+   * token contract, exactly as `buildErc20Transfer` would have built it.
+   */
+  const transferAsCall = (request: TransferRequest): Call => {
+    if (request.asset === AssetKind.Native) {
+      return { to: request.to as `0x${string}`, value: request.amount };
+    }
+    return {
+      to: request.token as `0x${string}`,
+      data: encodeErc20Transfer({
+        token: request.token as `0x${string}`,
+        to: request.to as `0x${string}`,
+        amount: request.amount,
+      }),
+    };
+  };
 
   on(Message.send, async ({ data }) => {
     noteActivity();
@@ -385,7 +441,13 @@ export function registerHandlers({ wallet, chains, swap, settings, prices, dapp 
     const active = resolveActive(network);
     const request = transferRequest(network, active.address, data);
 
-    const hash = await chains.transfer(network, request, active.sign);
+    // Routed through ERC-4337 when the account is already a smart account, so
+    // an upgraded account actually transacts as one. Upgrading is never a side
+    // effect of sending: `canBatch` is false until the user opts in on the
+    // Smart account screen, and a plain transaction is used until then.
+    const hash = (await smartAccounts.canBatch(network, active))
+      ? await smartAccounts.executeCalls(network, active, [transferAsCall(request)])
+      : await chains.transfer(network, request, active.sign);
     return { hash, explorerUrl: txExplorerUrl(network, hash) };
   });
 
@@ -402,6 +464,17 @@ export function registerHandlers({ wallet, chains, swap, settings, prices, dapp 
     return swap.tokens(settings.activeNetwork(), data.query);
   });
 
+  on(Message.getSwapSlippage, () => ({ pct: sanitizeSlippagePct(settings.slippagePct) }));
+
+  on(Message.setSwapSlippage, async ({ data }) => {
+    noteActivity();
+    // Validated here, not trusted from the popup: the thrown message is
+    // written for the user and crosses the wire as a WalletError.
+    const pct = validateSlippagePct(data.pct);
+    await settings.setSlippagePct(pct);
+    return { pct };
+  });
+
   on(Message.getSwapQuote, async ({ data }) => {
     noteActivity();
     const network = settings.activeNetwork();
@@ -416,7 +489,337 @@ export function registerHandlers({ wallet, chains, swap, settings, prices, dapp 
     noteActivity();
     const network = settings.activeNetwork();
     const active = resolveActive(network);
-    return swap.execute(network, active.address, data.execution, active.sign);
+    return swap.execute(network, active, data.execution);
+  });
+
+  // ---- Smart account (ERC-4337) ----
+
+  // One prepared User Operation at a time. The popup can only be showing one
+  // approval, and a map would keep stale operations — and the gas prices the
+  // user was quoted with them — alive indefinitely.
+  let pendingCalls: { id: string; networkId: string; prepared: PreparedCalls } | null = null;
+
+  // Every field but `supported` is meaningless on a network with no bundler,
+  // so they're empty rather than plausible-looking: a UI that ignores
+  // `supported` should render obviously-blank, not a wrong address.
+  // The endpoint half of the view, meaningful even when smart accounts aren't
+  // available — a missing bundler is exactly what makes them unavailable, and
+  // it's the field the user needs filled in to fix that.
+  const smartAccountEndpoints = (
+    network: NetworkConfig,
+  ): Pick<
+    SmartAccountView,
+    "bundlerUrl" | "hasCustomBundler" | "paymasterUrl" | "hasCustomPaymaster"
+  > => ({
+    bundlerUrl: settings.bundlerUrl(network) ?? "",
+    hasCustomBundler: settings.hasBundlerOverride(network.id),
+    paymasterUrl: settings.paymasterUrl(network) ?? "",
+    hasCustomPaymaster: settings.hasPaymasterOverride(network.id),
+  });
+
+  const smartAccountView = async (network: NetworkConfig): Promise<SmartAccountView> => {
+    const endpoints = smartAccountEndpoints(network);
+    // Everything else is meaningless without a bundler, and stays empty
+    // rather than plausible-looking: a UI that ignores `supported` should
+    // render obviously blank, not a wrong address.
+    if (!smartAccounts.isSupported(network)) {
+      return {
+        supported: false,
+        ...endpoints,
+        kind: "",
+        address: "",
+        owner: "",
+        sharesOwnerAddress: false,
+        active: false,
+        delegatedElsewhere: false,
+        entryPoint: "",
+        entryPointVersion: "",
+      };
+    }
+    const info = await smartAccounts.status(network, resolveActive(network));
+    const delegatedElsewhere =
+      info.delegatedTo !== null && info.delegatedTo !== info.implementation;
+    return {
+      supported: true,
+      ...endpoints,
+      kind: info.kind,
+      address: info.address,
+      owner: info.owner,
+      sharesOwnerAddress: info.sharesOwnerAddress,
+      // For EIP-7702, `deployed` only says the EOA carries *a* delegation;
+      // it's usable by this wallet only if it points at our implementation.
+      active: info.sharesOwnerAddress
+        ? info.delegatedTo !== null && !delegatedElsewhere
+        : info.deployed,
+      delegatedElsewhere,
+      entryPoint: info.entryPoint,
+      entryPointVersion: info.entryPointVersion,
+    };
+  };
+
+  on(Message.getSmartAccount, async () => {
+    noteActivity();
+    return smartAccountView(settings.activeNetwork());
+  });
+
+  on(Message.prepareSmartAccountUpgrade, async () => {
+    noteActivity();
+    const network = settings.activeNetwork();
+    // An empty batch on purpose: there is nothing to execute, the point is
+    // the EIP-7702 authorization that preparation attaches to the operation.
+    const prepared = await smartAccounts.prepare(network, resolveActive(network), []);
+    const id = crypto.randomUUID();
+    pendingCalls = { id, networkId: network.id, prepared };
+    return {
+      id,
+      maxCostWei: prepared.fees.maxCostWei.toString(),
+      sponsored: prepared.fees.sponsored,
+    } satisfies PreparedCallsView;
+  });
+
+  on(Message.sendPreparedCalls, async ({ data }) => {
+    noteActivity();
+    const pending = pendingCalls;
+    if (!pending || pending.id !== data.id) throw new Error("No prepared calls to send");
+    // Cleared before sending, not after: a handle must never be replayable
+    // into a second User Operation if the popup retries the message.
+    pendingCalls = null;
+    const network = settings.network(pending.networkId);
+    return {
+      userOpHash: await smartAccounts.send(network, resolveActive(network), pending.prepared),
+    };
+  });
+
+  on(Message.awaitCalls, async ({ data }) => {
+    const network = settings.activeNetwork();
+    const receipt = await smartAccounts.wait(network, resolveActive(network), data.userOpHash);
+    return {
+      userOpHash: receipt.userOpHash,
+      transactionHash: receipt.transactionHash,
+      success: receipt.success,
+      explorerUrl: txExplorerUrl(network, receipt.transactionHash),
+    } satisfies CallsReceiptView;
+  });
+
+  on(Message.revertSmartAccount, async () => {
+    noteActivity();
+    const network = settings.activeNetwork();
+    const hash = await smartAccounts.revoke(network, resolveActive(network));
+    return { hash, explorerUrl: txExplorerUrl(network, hash) };
+  });
+
+  /**
+   * Static, but served from the background so the picker can't drift from the
+   * set of kinds this build actually supports.
+   *
+   * Only the EIP-7702 kind is `available`. The counterfactual ones are
+   * implemented and tested in `@openwallet/chain-evm`, but the wallet is still
+   * single-address everywhere above it: balances, the receive screen and the
+   * accounts list all show the EOA. Letting a user "upgrade" into an account
+   * whose funds the wallet then can't show — and whose sends `canBatch`
+   * refuses to route — would be a dead end, so they're offered with the reason
+   * attached rather than silently or not at all.
+   */
+  on(Message.smartAccountKinds, () => [
+    {
+      id: SmartAccountKind.Simple7702,
+      label: "EIP-7702",
+      sharesOwnerAddress: true,
+      available: true,
+      note: "Same address and balance",
+    },
+    {
+      id: SmartAccountKind.Coinbase,
+      label: "Coinbase Smart Wallet",
+      sharesOwnerAddress: false,
+      available: false,
+      note: "Needs a second address in the UI",
+    },
+    {
+      id: SmartAccountKind.Solady,
+      label: "Solady",
+      sharesOwnerAddress: false,
+      available: false,
+      note: "Needs a second address in the UI",
+    },
+  ]);
+
+  on(Message.setSmartAccountKind, async ({ data }) => {
+    noteActivity();
+    // Validated rather than cast: this value is persisted, and a settings
+    // blob holding a kind no build recognises is a wallet that can't tell
+    // the user which contract their account is delegated to.
+    const kind = Object.values(SmartAccountKind).find((known) => known === data.kind);
+    if (!kind) throw new Error(`Unknown smart account kind: "${data.kind}"`);
+    await settings.setSmartAccountKind(kind);
+    return smartAccountView(settings.activeNetwork());
+  });
+
+  on(Message.setNetworkBundler, async ({ data }) => {
+    noteActivity();
+    await settings.setBundler(data.id, data.bundlerUrl);
+    return smartAccountView(settings.activeNetwork());
+  });
+
+  on(Message.resetNetworkBundler, async ({ data }) => {
+    noteActivity();
+    await settings.resetBundler(data.id);
+    return smartAccountView(settings.activeNetwork());
+  });
+
+  on(Message.setNetworkPaymaster, async ({ data }) => {
+    noteActivity();
+    await settings.setPaymaster(data.id, data.paymasterUrl);
+    return smartAccountView(settings.activeNetwork());
+  });
+
+  on(Message.resetNetworkPaymaster, async ({ data }) => {
+    noteActivity();
+    await settings.resetPaymaster(data.id);
+    return smartAccountView(settings.activeNetwork());
+  });
+
+  // ---- NFTs ----
+
+  const nftView = (item: {
+    standard: string;
+    contract: string;
+    tokenId: bigint;
+    collection: string | null;
+    balance: bigint;
+    metadata: { name: string | null; description: string | null; imageUrl: string | null };
+  }): NftView => ({
+    standard: item.standard,
+    contract: item.contract,
+    tokenId: item.tokenId.toString(),
+    name: item.metadata.name,
+    collection: item.collection,
+    description: item.metadata.description,
+    imageUrl: item.metadata.imageUrl,
+    balance: item.balance.toString(),
+  });
+
+  const nftListView = async (cursor?: string): Promise<NftListView> => {
+    const network = settings.activeNetwork();
+    const toggles = {
+      autodetect: settings.autodetectNfts,
+      displayMedia: settings.displayNftMedia,
+    };
+    if (network.kind !== ChainKind.Evm) {
+      return { items: [], indexed: false, supported: false, nextCursor: null, ...toggles };
+    }
+    const owner = resolveActive(network).address;
+    const listing = await nfts.list(network, owner, cursor);
+    return {
+      items: listing.items.map(nftView),
+      indexed: listing.indexed,
+      supported: true,
+      nextCursor: listing.nextCursor,
+      ...toggles,
+    };
+  };
+
+  on(Message.getNfts, async ({ data }) => {
+    noteActivity();
+    return nftListView(data.cursor);
+  });
+
+  on(Message.getNftDetail, async ({ data }) => {
+    noteActivity();
+    const network = settings.activeNetwork();
+    const owner = resolveActive(network).address;
+    // Read from the token's own metadata document rather than the indexer:
+    // attributes are exactly the field indexers report inconsistently.
+    const item = await nfts.read(network, data.contract, data.tokenId, owner);
+    return item ? item.metadata.attributes.map((a) => ({ trait: a.trait, value: a.value })) : [];
+  });
+
+  on(Message.setNftAutodetect, async ({ data }) => {
+    noteActivity();
+    await settings.setAutodetectNfts(data.enabled);
+    return nftListView();
+  });
+
+  on(Message.setNftMedia, async ({ data }) => {
+    noteActivity();
+    await settings.setDisplayNftMedia(data.enabled);
+    return nftListView();
+  });
+
+  on(Message.addNft, async ({ data }) => {
+    noteActivity();
+    const network = settings.activeNetwork();
+    const owner = resolveActive(network).address;
+    const item = await nfts.read(network, data.contract, data.tokenId, owner);
+    // Refused rather than stored optimistically: persisting an address that
+    // isn't an NFT contract would put a permanently broken card in the list.
+    if (!item) throw new Error("That address is not an ERC-721 or ERC-1155 contract");
+    if (item.balance === 0n) throw new Error("This account doesn't hold that token");
+    await settings.addNft(network.id, data.contract, data.tokenId);
+    return nftView(item);
+  });
+
+  on(Message.removeNft, async ({ data }) => {
+    noteActivity();
+    await settings.removeNft(settings.activeNetwork().id, data.contract, data.tokenId);
+  });
+
+  on(Message.sendNft, async ({ data }) => {
+    noteActivity();
+    const network = settings.activeNetwork();
+    const active = resolveActive(network);
+    const hash = await nfts.transfer(
+      network,
+      {
+        standard: data.standard === "erc1155" ? "erc1155" : "erc721",
+        contract: data.contract,
+        tokenId: data.tokenId,
+        from: active.address,
+        to: data.to,
+        ...(data.amount !== undefined && { amount: data.amount }),
+      },
+      active,
+    );
+    return { hash, explorerUrl: txExplorerUrl(network, hash) };
+  });
+
+  on(Message.getTokenBoundAccount, async ({ data }) => {
+    noteActivity();
+    const info = await nfts.tokenBoundAccount(
+      settings.activeNetwork(),
+      data.contract,
+      data.tokenId,
+    );
+    return {
+      address: info.address,
+      deployed: info.deployed,
+      nativeBalanceWei: info.nativeBalanceWei.toString(),
+    };
+  });
+
+  on(Message.sendFromTokenBoundAccount, async ({ data }) => {
+    noteActivity();
+    const network = settings.activeNetwork();
+    const hash = await nfts.sendFromTokenBoundAccount(
+      network,
+      data.contract,
+      data.tokenId,
+      { to: data.to, amount: data.amount, ...(data.token !== undefined && { token: data.token }) },
+      resolveActive(network),
+    );
+    return { hash, explorerUrl: txExplorerUrl(network, hash) };
+  });
+
+  on(Message.deployTokenBoundAccount, async ({ data }) => {
+    noteActivity();
+    const network = settings.activeNetwork();
+    const hash = await nfts.deployTokenBoundAccount(
+      network,
+      data.contract,
+      data.tokenId,
+      resolveActive(network),
+    );
+    return { hash, explorerUrl: txExplorerUrl(network, hash) };
   });
 
   // dApp connection management (popup)

@@ -7,6 +7,7 @@ import { ConnectionStore } from "./connection-store.js";
 import { createProviderService, type EmitEvent, type ProviderService } from "./provider-service.js";
 import type { SettingsService } from "../services/settings-service.js";
 import type { WalletService } from "../services/wallet-service.js";
+import type { SmartAccountService } from "../smart-account.js";
 
 export interface DappModule {
   readonly provider: ProviderService;
@@ -21,6 +22,7 @@ export interface DappModule {
 export function registerDapp(deps: {
   wallet: WalletService;
   settings: SettingsService;
+  smartAccounts: SmartAccountService;
 }): DappModule {
   const connections = new ConnectionStore(new ExtensionConnectionStorage());
   void connections.init();

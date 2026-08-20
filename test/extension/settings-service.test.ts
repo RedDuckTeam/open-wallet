@@ -76,3 +76,18 @@ describe("SettingsService cross-kind reset", () => {
     expect(service.activeAccountId).toBe(hdAccountId(0));
   });
 });
+
+describe("SettingsService slippage", () => {
+  it("defaults to the policy default and persists an update", async () => {
+    const storage = new FakeStorage();
+    const service = new SettingsService(storage);
+    await service.init();
+
+    expect(service.slippagePct).toBe(0.5);
+
+    await service.setSlippagePct(1);
+    expect(service.slippagePct).toBe(1);
+    // Written through, so the choice survives a worker restart.
+    expect(storage.saved?.slippagePct).toBe(1);
+  });
+});

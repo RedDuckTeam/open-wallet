@@ -1,6 +1,7 @@
 import {
   encodeFunctionData,
   type Address,
+  type Hex,
   type PublicClient,
   type TransactionSerializableEIP1559,
 } from "viem";
@@ -32,6 +33,21 @@ export async function getErc20Metadata(
     client.readContract({ address: token, abi: ERC20_ABI, functionName: "decimals" }),
   ]);
   return { name, symbol, decimals };
+}
+
+/**
+ * Calldata for an ERC-20 transfer, without wrapping it in a transaction.
+ *
+ * Split out from `buildErc20Transfer` because a smart account executes
+ * calldata directly — a User Operation batches calls, not transactions — so
+ * the ERC-4337 path needs this half on its own.
+ */
+export function encodeErc20Transfer(params: Omit<Erc20TransferParams, "from">): Hex {
+  return encodeFunctionData({
+    abi: ERC20_ABI,
+    functionName: "transfer",
+    args: [params.to, params.amount],
+  });
 }
 
 /** Same idea as `transfer.ts#buildNativeTransfer`, but the call target is the token contract and the value moves through `data`, not `value`. */

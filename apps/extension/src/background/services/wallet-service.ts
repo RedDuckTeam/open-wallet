@@ -1,12 +1,47 @@
 import { Wallet, type PublicAccount, type WalletOptions } from "@openwallet/core";
 import { WalletState } from "../../messaging/protocol.js";
+import type { SessionUnlock } from "../../platform/session.js";
 
 // Wraps the core Wallet: key lifecycle and signing. Knows nothing about chains,
 // RPC, or messaging.
 export class WalletService {
   #wallet: Wallet | null = null;
+  readonly #restored: Promise<void>;
 
-  constructor(private readonly options: WalletOptions) {}
+  constructor(
+    private readonly options: WalletOptions,
+    private readonly session: SessionUnlock,
+  ) {
+    // Started eagerly in the constructor because an MV3 worker restart re-runs
+    // the background entry point: by the time the first message arrives, this
+    // is usually already settled.
+    this.#restored = this.#restore();
+  }
+
+  /**
+   * Resolves once any session-backed unlock has been reapplied.
+   *
+   * Every message handler awaits this, so a request that arrives immediately
+   * after the worker woke up doesn't see a spuriously locked wallet and send
+   * the user to the password screen.
+   */
+  ready(): Promise<void> {
+    return this.#restored;
+  }
+
+  async #restore(): Promise<void> {
+    try {
+      const password = await this.session.load();
+      if (!password) return;
+      this.#wallet ??= await Wallet.open(this.options);
+      await this.#wallet.unlock(password);
+    } catch {
+      // A stale or unusable session entry must not brick the wallet: drop it
+      // and fall back to asking for the password.
+      await this.session.clear();
+      this.#wallet = null;
+    }
+  }
 
   get isUnlocked(): boolean {
     return this.#wallet?.isUnlocked ?? false;
@@ -20,25 +55,34 @@ export class WalletService {
   async create(password: string): Promise<string> {
     const { wallet, mnemonic } = await Wallet.create(password, this.options);
     this.#wallet = wallet;
+    await this.session.save(password);
     return mnemonic;
   }
 
   async import(mnemonic: string, password: string): Promise<void> {
     this.#wallet = await Wallet.import(mnemonic, password, this.options);
+    await this.session.save(password);
   }
 
   async unlock(password: string): Promise<void> {
     this.#wallet ??= await Wallet.open(this.options);
     await this.#wallet.unlock(password);
+    // Saved only after a successful unlock, so a wrong password never lands
+    // in session storage.
+    await this.session.save(password);
   }
 
   lock(): void {
     this.#wallet?.lock();
+    // Fire-and-forget: locking must take effect in memory immediately, and a
+    // failed clear still leaves the keyring wiped.
+    void this.session.clear();
   }
 
   async reset(): Promise<void> {
     await this.#wallet?.reset();
     this.#wallet = null;
+    await this.session.clear();
   }
 
   async revealMnemonic(password: string): Promise<string> {

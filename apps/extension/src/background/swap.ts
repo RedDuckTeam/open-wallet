@@ -14,6 +14,7 @@ import { JupiterClient, NATIVE_SOL_MINT, searchJupiterTokens } from "@openwallet
 import type { EvmSwapExecutionData, SolanaSwapExecutionData } from "@openwallet/api-contract";
 import { VersionedTransaction } from "@solana/web3.js";
 import { encodeFunctionData, erc20Abi, type Address, type Hex } from "viem";
+import type { Call } from "@openwallet/chain-evm";
 import { ChainKind } from "../messaging/protocol.js";
 import {
   txExplorerUrl,
@@ -28,10 +29,13 @@ import type {
   SwapTokenView,
 } from "../messaging/protocol.js";
 import type { SignWith } from "./chains.js";
+import type { ActiveSigner } from "./active-signer.js";
+import type { SmartAccountService } from "./smart-account.js";
 import type { BackendClient } from "./adapters/backend.js";
 
-const DEFAULT_SLIPPAGE = 0.005;
 const TOKEN_LIMIT = 50;
+/** How long a mined approval is waited for before the swap is called off. */
+const RECEIPT_TIMEOUT_MS = 120_000;
 // The zero address is how EVM aggregators (LI.FI included) represent the
 // native asset in a token-address field; there's no real "native" contract.
 const EVM_NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -77,9 +81,8 @@ export interface SwapService {
   ): Promise<SwapQuoteView>;
   execute(
     network: NetworkConfig,
-    from: string,
+    signer: ActiveSigner,
     execution: SwapExecutionView,
-    signWith: SignWith,
   ): Promise<SendResult>;
 }
 
@@ -93,7 +96,16 @@ function requireSolana(network: NetworkConfig): SolanaNetwork {
   return network;
 }
 
-export function createSwapService(backend: BackendClient): SwapService {
+export function createSwapService(
+  backend: BackendClient,
+  smartAccounts: SmartAccountService,
+  /**
+   * The user's slippage tolerance as a fraction (0.005 for 0.5%), read per
+   * call so a change in settings applies to the very next quote. Validated
+   * and sanitized by the caller — see `background/slippage.ts`.
+   */
+  slippage: () => number,
+): SwapService {
   // Keyless: only used when the backend itself doesn't answer.
   const directLifi = new LifiClient();
   const directJupiter = new JupiterClient();
@@ -124,13 +136,17 @@ export function createSwapService(backend: BackendClient): SwapService {
     fromAmount: string,
   ): Promise<SwapQuoteView> {
     if (network.kind === ChainKind.Evm) {
+      const src = fromToken ?? EVM_NATIVE_ADDRESS;
+      const dst = toToken ?? EVM_NATIVE_ADDRESS;
+      // EVM addresses are case-insensitive (checksum casing is cosmetic).
+      assertDifferentTokens(src.toLowerCase(), dst.toLowerCase());
       const request = {
         chainId: network.chain.id,
         fromAddress: from,
-        fromToken: fromToken ?? EVM_NATIVE_ADDRESS,
-        toToken: toToken ?? EVM_NATIVE_ADDRESS,
+        fromToken: src,
+        toToken: dst,
         fromAmount,
-        slippage: DEFAULT_SLIPPAGE,
+        slippage: slippage(),
       };
       try {
         return await backend.swapQuote(request);
@@ -140,12 +156,16 @@ export function createSwapService(backend: BackendClient): SwapService {
     }
 
     if (network.kind === ChainKind.Solana) {
+      const src = fromToken ?? NATIVE_SOL_MINT;
+      const dst = toToken ?? NATIVE_SOL_MINT;
+      // Solana mints are case-sensitive base58 — compared exactly, unlike EVM.
+      assertDifferentTokens(src, dst);
       const request = {
         fromAddress: from,
-        fromToken: fromToken ?? NATIVE_SOL_MINT,
-        toToken: toToken ?? NATIVE_SOL_MINT,
+        fromToken: src,
+        toToken: dst,
         fromAmount,
-        slippage: DEFAULT_SLIPPAGE,
+        slippage: slippage(),
       };
       try {
         return await backend.solanaSwapQuote(request);
@@ -161,46 +181,107 @@ export function createSwapService(backend: BackendClient): SwapService {
 
   async function execute(
     network: NetworkConfig,
-    from: string,
+    signer: ActiveSigner,
     execution: SwapExecutionView,
-    signWith: SignWith,
   ): Promise<SendResult> {
     if (execution.kind === "solana") {
-      return executeSolana(requireSolana(network), execution, signWith);
+      // The route becomes a transaction only now: it embeds a fresh
+      // blockhash and expires with it in about a minute, so it is built,
+      // signed and broadcast in the same breath. Backend first (keyed),
+      // direct Jupiter as the keyless fallback — the same policy as quoting.
+      const transactionBase64 = await backend
+        .buildSolanaSwap(execution.route, signer.address)
+        .catch(() => directJupiter.buildSwapTransaction(execution.route, signer.address));
+      return executeSolana(requireSolana(network), transactionBase64, signer.sign);
     }
-    return executeEvm(requireEvm(network), from, execution, signWith);
+    return executeEvm(requireEvm(network), signer, execution, smartAccounts);
   }
 
   return { tokens, getQuote, execute };
 }
 
+/**
+ * Caught before the aggregator is asked: both reject a same-token swap, but
+ * with messages written for their API consumers ("CIRCULAR_ARBITRAGE_IS_
+ * DISABLED"), not for a person at a wallet.
+ */
+function assertDifferentTokens(fromToken: string, toToken: string): void {
+  if (fromToken === toToken) {
+    throw new Error("Pick two different tokens to swap between.");
+  }
+}
+
 async function executeEvm(
   evm: EvmNetwork,
-  from: string,
+  signer: ActiveSigner,
   execution: EvmSwapExecutionData,
-  signWith: SignWith,
+  smartAccounts: SmartAccountService,
 ): Promise<SendResult> {
   const client = createEvmClient(evm.rpcUrl, evm.chain);
   const { swapTx, approval } = execution;
-  const owner = from as Address;
+  const owner = signer.address as Address;
 
-  // Approve the router to spend the input token, if it can't already.
+  /**
+   * What the router still needs approved, if anything. Two flavours because
+   * of tokens with USDT's guard: their `approve` reverts when changing a
+   * non-zero allowance directly (a defence against a known front-running
+   * pattern), so a leftover partial allowance must be reset to zero before
+   * the real approval — the flow LI.FI's own integration guide prescribes.
+   */
+  let approvalCalls: Call[] = [];
   if (approval) {
     const amount = BigInt(approval.amount);
+    const token = approval.token as Address;
+    const spender = approval.spender as Address;
     const allowance = await client.readContract({
-      address: approval.token as Address,
+      address: token,
       abi: erc20Abi,
       functionName: "allowance",
-      args: [owner, approval.spender as Address],
+      args: [owner, spender],
     });
     if (allowance < amount) {
-      const data = encodeFunctionData({
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [approval.spender as Address, amount],
+      const approveCall = (value: bigint): Call => ({
+        to: token,
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [spender, value],
+        }),
       });
-      const approveHash = await signEvm(client, owner, approval.token, data, 0n, signWith);
-      await client.waitForTransactionReceipt({ hash: approveHash });
+      approvalCalls =
+        allowance > 0n ? [approveCall(0n), approveCall(amount)] : [approveCall(amount)];
+    }
+  }
+
+  /**
+   * On a smart account, approvals and swap go out as one atomic User
+   * Operation. This is the reason account abstraction is worth having in a
+   * wallet at all: as separate transactions, the approval can land while the
+   * swap fails, leaving the router with a standing allowance over the user's
+   * tokens and the user with nothing to show for it. Batched, either all of
+   * it happens or none does — and it costs one confirmation instead of up to
+   * three.
+   */
+  if (await smartAccounts.canBatch(evm, signer)) {
+    const calls: Call[] = [
+      ...approvalCalls,
+      { to: swapTx.to as Address, value: BigInt(swapTx.value), data: swapTx.data as Hex },
+    ];
+    const batched = await smartAccounts.executeCalls(evm, signer, calls);
+    return { hash: batched, explorerUrl: txExplorerUrl(evm, batched) };
+  }
+
+  // Plain EOA: each approval must be mined — and verified, since a reverted
+  // approval would send the swap to certain failure with a gas fee attached —
+  // before the swap can draw on it.
+  for (const call of approvalCalls) {
+    const hash = await signEvm(client, owner, call.to, call.data ?? "0x", 0n, signer.sign);
+    const receipt = await client.waitForTransactionReceipt({
+      hash,
+      timeout: RECEIPT_TIMEOUT_MS,
+    });
+    if (receipt.status !== "success") {
+      throw new Error("The token approval was reverted on-chain. No swap was attempted.");
     }
   }
 
@@ -210,7 +291,7 @@ async function executeEvm(
     swapTx.to,
     swapTx.data,
     BigInt(swapTx.value),
-    signWith,
+    signer.sign,
     swapTx.gasLimit ? BigInt(swapTx.gasLimit) : undefined,
   );
   return { hash, explorerUrl: txExplorerUrl(evm, hash) };
@@ -243,13 +324,11 @@ async function signEvm(
 // approval step, SPL allowances don't exist the way ERC-20's does.
 async function executeSolana(
   solana: SolanaNetwork,
-  execution: SolanaSwapExecutionData,
+  transactionBase64: string,
   signWith: SignWith,
 ): Promise<SendResult> {
   const connection = createSolanaClient(solana.rpcUrl);
-  const transaction = VersionedTransaction.deserialize(
-    Buffer.from(execution.transactionBase64, "base64"),
-  );
+  const transaction = VersionedTransaction.deserialize(Buffer.from(transactionBase64, "base64"));
   const signed = (await signWith((privateKey) =>
     signSolanaTx(privateKey, transaction),
   )) as VersionedTransaction;

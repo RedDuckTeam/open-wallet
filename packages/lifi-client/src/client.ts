@@ -21,6 +21,20 @@ export interface SwapQuoteParams {
   readonly slippage: number;
 }
 
+/**
+ * LI.FI doesn't report price impact directly, but the estimate carries USD
+ * valuations of both sides. Their ratio is the impact the user actually
+ * experiences — fees and thin liquidity included — which is the number a
+ * warning should be based on. Null when either valuation is missing or
+ * nonsensical, rather than a fabricated 0.
+ */
+function priceImpactPct(estimate: Record<string, unknown>): number | null {
+  const fromUsd = Number(str(estimate, "fromAmountUSD"));
+  const toUsd = Number(str(estimate, "toAmountUSD"));
+  if (!Number.isFinite(fromUsd) || !Number.isFinite(toUsd) || fromUsd <= 0) return null;
+  return ((fromUsd - toUsd) / fromUsd) * 100;
+}
+
 function gasUsd(estimate: Record<string, unknown>): number | null {
   const costs = estimate.gasCosts;
   if (!Array.isArray(costs)) return null;
@@ -101,21 +115,32 @@ export class LifiClient {
       toDecimals: num(toToken, "decimals"),
       tool: str(record(route, "toolDetails"), "name") || "DEX",
       gasUsd: gasUsd(estimate),
+      priceImpactPct: priceImpactPct(estimate),
       execution: this.parseExecution(route),
     };
   }
 
+  /**
+   * LI.FI's own `message` is the best text when present ("No available
+   * quotes for the requested transfer"); otherwise the status decides,
+   * because "No swap route available (429)" would blame the route for what
+   * is actually rate limiting.
+   */
   async #get(url: URL): Promise<unknown> {
     try {
       return await getJson(url, this.apiKey ? { "x-lifi-api-key": this.apiKey } : undefined);
     } catch (error) {
       if (error instanceof UpstreamError) {
         const message = str(record({ body: error.body }, "body"), "message");
-        throw new Error(message || `No swap route available (${String(error.status)})`, {
-          cause: error,
-        });
+        throw new Error(message || fallbackMessage(error.status), { cause: error });
       }
       throw error;
     }
   }
+}
+
+function fallbackMessage(status: number): string {
+  if (status === 429) return "LI.FI is rate limiting requests. Wait a moment and try again.";
+  if (status >= 500) return `LI.FI is temporarily unavailable (${String(status)})`;
+  return `No swap route available (${String(status)})`;
 }

@@ -1,8 +1,7 @@
 import { createEvmClient } from "@openwallet/chain-evm";
 import { RpcRequestError } from "viem";
-import { RPC_ERROR } from "../../dapp/messages.js";
+import { RPC_ERROR, providerError } from "../../dapp/messages.js";
 import type { EvmNetwork } from "../../config/networks.js";
-import { providerError } from "./approvals.js";
 
 // Forwards a dApp-supplied JSON-RPC method we don't otherwise route (reads
 // only — routeOf/ROUTES in rpc-router.ts must keep anything state-changing

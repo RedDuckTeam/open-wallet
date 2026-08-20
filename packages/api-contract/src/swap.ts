@@ -25,11 +25,16 @@ export const EvmSwapExecutionData = z.object({
 });
 export type EvmSwapExecutionData = z.infer<typeof EvmSwapExecutionData>;
 
-// A ready-to-sign Solana transaction (base64), already built by the
-// aggregator — no separate approval step, SPL allowances don't exist.
+// The route to execute on Solana — deliberately NOT a built transaction. A
+// Solana transaction embeds a recent blockhash and dies with it about a
+// minute later, so one built at quote time would expire while the user reads
+// the numbers. The quote carries the aggregator's route verbatim instead,
+// and the wallet asks for the transaction at confirmation via the build
+// endpoint, signing and broadcasting immediately. No approval step: SPL has
+// no allowance the way ERC-20 does.
 export const SolanaSwapExecutionData = z.object({
   kind: z.literal("solana"),
-  transactionBase64: z.string(),
+  route: z.record(z.string(), z.unknown()),
 });
 export type SolanaSwapExecutionData = z.infer<typeof SolanaSwapExecutionData>;
 
@@ -54,6 +59,11 @@ export const SwapQuoteResponse = z.object({
   toDecimals: z.number().int(),
   tool: z.string(),
   gasUsd: z.number().nullable(),
+  // How much worse the execution price is than market, in percent (0.8 means
+  // 0.8%); null when the aggregator doesn't report enough to tell. Surfaced
+  // because a thin pool quotes a catastrophic rate that looks like a normal
+  // number until it's compared to the market.
+  priceImpactPct: z.number().nullable(),
   execution: SwapExecutionData,
 });
 export type SwapQuoteResponse = z.infer<typeof SwapQuoteResponse>;
@@ -75,3 +85,17 @@ export const SolanaSwapQuoteQuery = z.object({
   fromAmount: z.string(),
   slippage: z.coerce.number().positive().max(1).default(0.005),
 });
+
+// Turns a previously quoted Solana route into a signable transaction. POSTed
+// at confirmation time — see `SolanaSwapExecutionData` for why the split
+// exists. The response's transaction is valid for about a minute.
+export const SolanaSwapBuildRequest = z.object({
+  route: z.record(z.string(), z.unknown()),
+  userPublicKey: z.string().min(32),
+});
+export type SolanaSwapBuildRequest = z.infer<typeof SolanaSwapBuildRequest>;
+
+export const SolanaSwapBuildResponse = z.object({
+  transactionBase64: z.string().min(1),
+});
+export type SolanaSwapBuildResponse = z.infer<typeof SolanaSwapBuildResponse>;

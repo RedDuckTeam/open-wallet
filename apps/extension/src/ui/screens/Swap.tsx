@@ -3,6 +3,7 @@ import { ArrowDown, ArrowLeft, CheckCircle2, ChevronDown, Search } from "lucide-
 import { walletApi } from "../../messaging/client.js";
 import {
   NATIVE_ASSET_ID,
+  WalletErrorCode,
   type AssetView,
   type NetworkView,
   type SendResult,
@@ -10,6 +11,13 @@ import {
   type SwapTokenView,
 } from "../../messaging/protocol.js";
 import { errorMessage } from "../format/error.js";
+import { toBaseUnits } from "../../units.js";
+import {
+  DEFAULT_SLIPPAGE_PCT,
+  HIGH_SLIPPAGE_PCT,
+  SLIPPAGE_PRESETS_PCT,
+  validateSlippagePct,
+} from "../../slippage.js";
 import { formatUnits } from "../format/units.js";
 import { useAssets } from "../state/assets.js";
 import { AmountPanel, TokenPill, maxAmount, useFeeReserve } from "../components/amount.js";
@@ -18,6 +26,8 @@ import { Button } from "../components/shadcn/button.js";
 import { Card } from "../components/shadcn/card.js";
 import { Input } from "../components/shadcn/input.js";
 import { Separator } from "../components/shadcn/separator.js";
+
+const QUOTE_TTL_MS = 60_000;
 
 function Header(): React.ReactElement {
   return (
@@ -72,9 +82,35 @@ function SwapForm({
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [slippagePct, setSlippagePct] = useState(DEFAULT_SLIPPAGE_PCT);
+  const quotedAt = useRef(0);
   const reserveWei = useFeeReserve(network.id, "swap");
 
   const from = assets.find((a) => a.id === fromId) ?? assets[0];
+
+  useEffect(() => {
+    void walletApi.getSwapSlippage().then(({ pct }) => setSlippagePct(pct));
+  }, []);
+
+  /**
+   * A quote is a snapshot of a moving price and its route has a lifetime of
+   * its own (a Solana blockhash lives about a minute) — after 60s it is
+   * withdrawn rather than left looking confirmable. Skipped once a result is
+   * up: that route is already spent, and expiring it behind the success
+   * screen would greet the user with a stale error.
+   */
+  useEffect(() => {
+    if (!quote || result) return;
+    const remaining = quotedAt.current + QUOTE_TTL_MS - Date.now();
+    const timer = setTimeout(
+      () => {
+        setQuote(null);
+        setError("The quote expired. Prices move — get a fresh one.");
+      },
+      Math.max(0, remaining),
+    );
+    return () => clearTimeout(timer);
+  }, [quote, result]);
 
   if (result) {
     return (
@@ -106,15 +142,22 @@ function SwapForm({
     setError(null);
     if (!from || !toToken) return setError("Pick a token to swap to.");
     if (!(Number(amount) > 0)) return setError("Enter an amount greater than 0.");
+    // The same exact base-unit comparison the send screen makes: a lossy
+    // float comparison could disagree with the swap itself right at the
+    // balance boundary, and an aggregator error about funds is far less
+    // clear than saying it here.
+    if (toBaseUnits(amount, from.decimals) > BigInt(from.balanceWei)) {
+      return setError("Amount exceeds your balance.");
+    }
     setBusy(true);
     try {
-      setQuote(
-        await walletApi.getSwapQuote(
-          { address: from.address, decimals: from.decimals },
-          { address: toToken.address, decimals: toToken.decimals },
-          amount,
-        ),
+      const fresh = await walletApi.getSwapQuote(
+        { address: from.address, decimals: from.decimals },
+        { address: toToken.address, decimals: toToken.decimals },
+        amount,
       );
+      quotedAt.current = Date.now();
+      setQuote(fresh);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -131,6 +174,13 @@ function SwapForm({
       reload();
     } catch (e) {
       setError(errorMessage(e));
+      // A slippage or expiry failure means this exact route is spent —
+      // retrying it can only fail again, so the quote is withdrawn and the
+      // button goes back to "Get quote".
+      const code = (e as { code?: string }).code;
+      if (code === WalletErrorCode.SlippageExceeded || code === WalletErrorCode.QuoteExpired) {
+        setQuote(null);
+      }
     } finally {
       setBusy(false);
     }
@@ -164,6 +214,17 @@ function SwapForm({
           pill={<ReceivePill token={toToken} onClick={() => setPicking(true)} />}
         />
       </div>
+
+      <SlippageControl
+        pct={slippagePct}
+        onChange={(pct) => {
+          setSlippagePct(pct);
+          // The quote's minimum-received was computed with the old
+          // tolerance — confirming it now would promise the wrong floor.
+          setQuote(null);
+        }}
+        onError={setError}
+      />
 
       {quote ? <QuoteDetails quote={quote} /> : null}
 
@@ -290,24 +351,42 @@ function TokenSearch({
   );
 }
 
+/** Past this, the shortfall against market price stops being noise and deserves a warning. */
+const PRICE_IMPACT_WARN_PCT = 5;
+
 function QuoteDetails({ quote }: { quote: SwapQuoteView }): React.ReactElement {
+  const impact = quote.priceImpactPct;
   return (
-    <Card className="gap-0 py-0">
-      <Row label="Rate" value={`1 ${quote.fromSymbol} ≈ ${rate(quote)} ${quote.toSymbol}`} />
-      <Separator />
-      <Row
-        label="Min received"
-        value={`${formatUnits(quote.toAmountMin, quote.toDecimals)} ${quote.toSymbol}`}
-      />
-      <Separator />
-      <Row label="Route" value={quote.tool} />
-      {quote.gasUsd !== null ? (
-        <>
-          <Separator />
-          <Row label="Network fee" value={`~$${quote.gasUsd.toFixed(2)}`} />
-        </>
+    <>
+      <Card className="gap-0 py-0">
+        <Row label="Rate" value={`1 ${quote.fromSymbol} ≈ ${rate(quote)} ${quote.toSymbol}`} />
+        <Separator />
+        <Row
+          label="Min received"
+          value={`${formatUnits(quote.toAmountMin, quote.toDecimals)} ${quote.toSymbol}`}
+        />
+        <Separator />
+        <Row label="Route" value={quote.tool} />
+        {impact !== null ? (
+          <>
+            <Separator />
+            <Row label="Price impact" value={`${impact < 0.01 ? "< 0.01" : impact.toFixed(2)}%`} />
+          </>
+        ) : null}
+        {quote.gasUsd !== null ? (
+          <>
+            <Separator />
+            <Row label="Network fee" value={`~$${quote.gasUsd.toFixed(2)}`} />
+          </>
+        ) : null}
+      </Card>
+      {impact !== null && impact >= PRICE_IMPACT_WARN_PCT ? (
+        <Callout tone="error">
+          This trade moves the price by about {impact.toFixed(1)}% — you receive markedly less than
+          the market rate. Usually a sign the pool is too thin for this amount.
+        </Callout>
       ) : null}
-    </Card>
+    </>
   );
 }
 
@@ -348,6 +427,93 @@ function Done({ result, onDone }: { result: SendResult; onDone: () => void }): R
       <Button className="w-full" onClick={onDone}>
         Swap again
       </Button>
+    </div>
+  );
+}
+
+/**
+ * The slippage tolerance, edited where it takes effect. Presets cover what
+ * almost everyone wants; the custom field takes anything the policy allows
+ * and explains itself when it refuses. Persisted through the background, so
+ * the choice survives popup reopens and applies on both chain families.
+ */
+function SlippageControl({
+  pct,
+  onChange,
+  onError,
+}: {
+  pct: number;
+  onChange: (pct: number) => void;
+  onError: (message: string) => void;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const [custom, setCustom] = useState("");
+
+  const apply = (value: number): void => {
+    let normalized: number;
+    try {
+      normalized = validateSlippagePct(value);
+    } catch (e) {
+      onError(errorMessage(e));
+      return;
+    }
+    setCustom("");
+    void walletApi.setSwapSlippage(normalized).then(
+      ({ pct: saved }) => onChange(saved),
+      (e: unknown) => onError(errorMessage(e)),
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="text-muted-foreground hover:text-foreground flex items-center justify-between text-xs"
+      >
+        <span>Max slippage</span>
+        <span className="font-semibold">
+          {pct}% {open ? "\u25B4" : "\u25BE"}
+        </span>
+      </button>
+
+      {open ? (
+        <>
+          <div className="flex items-center gap-1.5">
+            {SLIPPAGE_PRESETS_PCT.map((preset) => (
+              <Button
+                key={preset}
+                type="button"
+                variant={pct === preset ? "default" : "outline"}
+                size="sm"
+                className="h-7 rounded-full px-3 text-xs"
+                onClick={() => apply(preset)}
+              >
+                {preset}%
+              </Button>
+            ))}
+            <Input
+              value={custom}
+              placeholder="Custom"
+              className="h-7 flex-1 text-center text-xs"
+              onChange={(event) => setCustom(event.target.value.replace(",", "."))}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && custom.trim()) apply(Number(custom));
+              }}
+              onBlur={() => {
+                if (custom.trim()) apply(Number(custom));
+              }}
+            />
+          </div>
+          {pct >= HIGH_SLIPPAGE_PCT ? (
+            <p className="text-muted-foreground text-[11.5px]">
+              High slippage lets the price move {pct}% against you before the swap reverts — more
+              room for a worse fill.
+            </p>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }

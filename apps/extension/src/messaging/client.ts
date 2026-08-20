@@ -43,9 +43,52 @@ export const walletApi = {
   getFeeReserve: (intent: "transfer" | "swap") => sendMessage(Message.getFeeReserve, { intent }),
 
   swapTokens: (query: string) => sendMessage(Message.swapTokens, { query }),
+  getSwapSlippage: () => sendMessage(Message.getSwapSlippage, undefined),
+  setSwapSlippage: (pct: number) => sendMessage(Message.setSwapSlippage, { pct }),
   getSwapQuote: (from: SwapTokenRef, to: SwapTokenRef, amount: string) =>
     sendMessage(Message.getSwapQuote, { from, to, amount }),
   executeSwap: (execution: SwapExecutionView) => sendMessage(Message.executeSwap, { execution }),
+
+  getSmartAccount: () => sendMessage(Message.getSmartAccount, undefined),
+  prepareSmartAccountUpgrade: () => sendMessage(Message.prepareSmartAccountUpgrade, undefined),
+  sendPreparedCalls: (id: string) => sendMessage(Message.sendPreparedCalls, { id }),
+  awaitCalls: (userOpHash: string) => sendMessage(Message.awaitCalls, { userOpHash }),
+  revertSmartAccount: () => sendMessage(Message.revertSmartAccount, undefined),
+  smartAccountKinds: () => sendMessage(Message.smartAccountKinds, undefined),
+  setSmartAccountKind: (kind: string) => sendMessage(Message.setSmartAccountKind, { kind }),
+  setNetworkBundler: (id: string, bundlerUrl: string) =>
+    sendMessage(Message.setNetworkBundler, { id, bundlerUrl }),
+  resetNetworkBundler: (id: string) => sendMessage(Message.resetNetworkBundler, { id }),
+  setNetworkPaymaster: (id: string, paymasterUrl: string) =>
+    sendMessage(Message.setNetworkPaymaster, { id, paymasterUrl }),
+  resetNetworkPaymaster: (id: string) => sendMessage(Message.resetNetworkPaymaster, { id }),
+
+  getNfts: (cursor?: string) => sendMessage(Message.getNfts, cursor ? { cursor } : {}),
+  getNftDetail: (contract: string, tokenId: string) =>
+    sendMessage(Message.getNftDetail, { contract, tokenId }),
+  addNft: (contract: string, tokenId: string) => sendMessage(Message.addNft, { contract, tokenId }),
+  removeNft: (contract: string, tokenId: string) =>
+    sendMessage(Message.removeNft, { contract, tokenId }),
+  setNftAutodetect: (enabled: boolean) => sendMessage(Message.setNftAutodetect, { enabled }),
+  setNftMedia: (enabled: boolean) => sendMessage(Message.setNftMedia, { enabled }),
+  sendNft: (input: {
+    contract: string;
+    tokenId: string;
+    standard: string;
+    to: string;
+    amount?: string;
+  }) => sendMessage(Message.sendNft, input),
+  getTokenBoundAccount: (contract: string, tokenId: string) =>
+    sendMessage(Message.getTokenBoundAccount, { contract, tokenId }),
+  deployTokenBoundAccount: (contract: string, tokenId: string) =>
+    sendMessage(Message.deployTokenBoundAccount, { contract, tokenId }),
+  sendFromTokenBoundAccount: (input: {
+    contract: string;
+    tokenId: string;
+    to: string;
+    amount: string;
+    token?: string;
+  }) => sendMessage(Message.sendFromTokenBoundAccount, input),
 
   getConnections: () => sendMessage(Message.getConnections, undefined),
   activeSiteConnection: () => sendMessage(Message.activeSiteConnection, undefined),

@@ -155,6 +155,19 @@ export const NETWORKS: readonly NetworkConfig[] = [
 // Sepolia by default, so send/receive works with free faucet funds.
 export const DEFAULT_NETWORK_ID = "sepolia";
 
+/**
+ * The network whose ENS registry every EVM name is resolved against.
+ *
+ * ENS is an L1 registry: the contracts live on Ethereum and are not deployed
+ * on Base, Arbitrum, or any other L2. Resolving against whichever network
+ * happens to be active would therefore work on Ethereum and Sepolia and
+ * silently fail everywhere else — so resolution is pinned to L1 regardless of
+ * the active network, the same thing MetaMask does. The answer is valid
+ * across chains because an ENS record holds a plain EVM address, which means
+ * the same thing on every EVM network.
+ */
+export const ENS_NETWORK_ID = "ethereum";
+
 const CUSTOM_NETWORK_COLOR = "#6B7280";
 
 // A user-imported EVM network, as persisted in settings.
@@ -193,6 +206,27 @@ export function buildEvmNetwork(input: CustomEvmNetworkInput): EvmNetwork {
 // The endpoint a network reads from (field differs by kind).
 export function rpcEndpoint(network: NetworkConfig): string {
   return network.kind === ChainKind.Bitcoin ? network.esploraUrl : network.rpcUrl;
+}
+
+/**
+ * The ERC-4337 bundler for a network, or null when smart accounts aren't
+ * available on it.
+ *
+ * Derived rather than stored on `EvmNetwork` so a user-imported custom chain
+ * gets bundler support on the same terms as a built-in one, with no per-network
+ * literal to keep in sync. Non-EVM networks are always null — User Operations
+ * and EntryPoints are an EVM-family concept, and Solana/Bitcoin have no
+ * equivalent to route through.
+ */
+export function bundlerEndpoint(network: NetworkConfig): string | null {
+  if (network.kind !== ChainKind.Evm || !env.bundlerUrl) return null;
+  return env.bundlerUrl.replaceAll("{chainId}", String(network.chain.id));
+}
+
+/** The ERC-7677 paymaster for a network, or null when User Operations are self-funded. */
+export function paymasterEndpoint(network: NetworkConfig): string | null {
+  if (network.kind !== ChainKind.Evm || !env.paymasterUrl) return null;
+  return env.paymasterUrl.replaceAll("{chainId}", String(network.chain.id));
 }
 
 // A copy of network with its endpoint replaced (custom-RPC override).

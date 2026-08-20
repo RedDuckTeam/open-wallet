@@ -147,7 +147,9 @@ export function AmountPanel({
           placeholder="0"
           inputMode="decimal"
           readOnly={readOnly}
-          onChange={(event) => onAmountChange?.(event.target.value)}
+          // Normalized at the entry point so validation and parsing
+          // downstream only ever see a dot as the decimal separator.
+          onChange={(event) => onAmountChange?.(event.target.value.replace(",", "."))}
         />
         {pill}
       </div>
