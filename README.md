@@ -24,7 +24,7 @@ OpenWallet is a browser-extension wallet built in the open: a BIP-39 seed, SLIP-
 | Language     | TypeScript (Node.js ≥ 20, `strict`, type-aware ESLint)                                  |
 | Extension    | [WXT](https://wxt.dev) + React 19, Tailwind CSS 4, Radix UI                             |
 | Cryptography | [`@noble/*`](https://github.com/paulmillr/noble-hashes) / `@scure/*`                    |
-| EVM          | [viem](https://viem.sh) — signing, ERC-20, fee tiers, ENS                               |
+| EVM          | [viem](https://viem.sh) — signing, ERC-20, fee tiers, ENS, ERC-4337                     |
 | Solana       | [`@solana/web3.js`](https://solana-labs.github.io/solana-web3.js/) — SPL, priority fees |
 | Bitcoin      | [bitcoinjs-lib](https://github.com/bitcoinjs/bitcoinjs-lib) — native SegWit, PSBT, RBF  |
 | Swaps        | [LI.FI](https://li.fi) (EVM) and [Jupiter](https://jup.ag) (Solana)                     |
@@ -53,17 +53,17 @@ flowchart LR
 
 ## Workspace
 
-| Package                                                 | What it is                                                                 |
-| ------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [`@openwallet/core`](packages/core)                     | Mnemonic, HD/SLIP-10 derivation, encrypted vault, keyring, `ChainAdapter`  |
-| [`@openwallet/chain-evm`](packages/chain-evm)           | EVM derivation, signing, ERC-20 transfers, fee tiers, ENS, speed-up/cancel |
-| [`@openwallet/chain-solana`](packages/chain-solana)     | Solana derivation, signing, SPL transfers, fee tiers                       |
-| [`@openwallet/chain-bitcoin`](packages/chain-bitcoin)   | Bitcoin (native SegWit) derivation, PSBT signing, RBF, message signing     |
-| [`@openwallet/api-contract`](packages/api-contract)     | Zod schemas shared by the API and its consumers                            |
-| [`@openwallet/lifi-client`](packages/lifi-client)       | LI.FI quotes and token lists for EVM swaps                                 |
-| [`@openwallet/jupiter-client`](packages/jupiter-client) | Jupiter quotes and token lists for Solana swaps                            |
-| [`@openwallet/extension`](apps/extension)               | The browser extension: onboarding, accounts, send, swap, dApp approvals    |
-| [`@openwallet/api`](apps/api)                           | NestJS service for prices, tokens and swap routing — stateless, key-free   |
+| Package                                                 | What it is                                                                           |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| [`@openwallet/core`](packages/core)                     | Mnemonic, HD/SLIP-10 derivation, encrypted vault, keyring, `ChainAdapter`            |
+| [`@openwallet/chain-evm`](packages/chain-evm)           | EVM derivation, signing, ERC-20 transfers, fee tiers, ENS, speed-up/cancel, ERC-4337 |
+| [`@openwallet/chain-solana`](packages/chain-solana)     | Solana derivation, signing, SPL transfers, fee tiers                                 |
+| [`@openwallet/chain-bitcoin`](packages/chain-bitcoin)   | Bitcoin (native SegWit) derivation, PSBT signing, RBF, message signing               |
+| [`@openwallet/api-contract`](packages/api-contract)     | Zod schemas shared by the API and its consumers                                      |
+| [`@openwallet/lifi-client`](packages/lifi-client)       | LI.FI quotes and token lists for EVM swaps                                           |
+| [`@openwallet/jupiter-client`](packages/jupiter-client) | Jupiter quotes and token lists for Solana swaps                                      |
+| [`@openwallet/extension`](apps/extension)               | The browser extension: onboarding, accounts, send, swap, dApp approvals              |
+| [`@openwallet/api`](apps/api)                           | NestJS service for prices, tokens and swap routing — stateless, key-free             |
 
 **Dependency direction is `chain-* → core` only.** `core` never imports a chain package and chain packages never import each other; ESLint enforces it rather than leaving it to convention.
 

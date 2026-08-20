@@ -14,6 +14,7 @@ import { JupiterClient, NATIVE_SOL_MINT, searchJupiterTokens } from "@openwallet
 import type { EvmSwapExecutionData, SolanaSwapExecutionData } from "@openwallet/api-contract";
 import { VersionedTransaction } from "@solana/web3.js";
 import { encodeFunctionData, erc20Abi, type Address, type Hex } from "viem";
+import type { Call } from "@openwallet/chain-evm";
 import { ChainKind } from "../messaging/protocol.js";
 import {
   txExplorerUrl,
@@ -28,6 +29,8 @@ import type {
   SwapTokenView,
 } from "../messaging/protocol.js";
 import type { SignWith } from "./chains.js";
+import type { ActiveSigner } from "./active-signer.js";
+import type { SmartAccountService } from "./smart-account.js";
 import type { BackendClient } from "./adapters/backend.js";
 
 const DEFAULT_SLIPPAGE = 0.005;
@@ -77,9 +80,8 @@ export interface SwapService {
   ): Promise<SwapQuoteView>;
   execute(
     network: NetworkConfig,
-    from: string,
+    signer: ActiveSigner,
     execution: SwapExecutionView,
-    signWith: SignWith,
   ): Promise<SendResult>;
 }
 
@@ -93,7 +95,10 @@ function requireSolana(network: NetworkConfig): SolanaNetwork {
   return network;
 }
 
-export function createSwapService(backend: BackendClient): SwapService {
+export function createSwapService(
+  backend: BackendClient,
+  smartAccounts: SmartAccountService,
+): SwapService {
   // Keyless: only used when the backend itself doesn't answer.
   const directLifi = new LifiClient();
   const directJupiter = new JupiterClient();
@@ -161,14 +166,13 @@ export function createSwapService(backend: BackendClient): SwapService {
 
   async function execute(
     network: NetworkConfig,
-    from: string,
+    signer: ActiveSigner,
     execution: SwapExecutionView,
-    signWith: SignWith,
   ): Promise<SendResult> {
     if (execution.kind === "solana") {
-      return executeSolana(requireSolana(network), execution, signWith);
+      return executeSolana(requireSolana(network), execution, signer.sign);
     }
-    return executeEvm(requireEvm(network), from, execution, signWith);
+    return executeEvm(requireEvm(network), signer, execution, smartAccounts);
   }
 
   return { tokens, getQuote, execute };
@@ -176,15 +180,16 @@ export function createSwapService(backend: BackendClient): SwapService {
 
 async function executeEvm(
   evm: EvmNetwork,
-  from: string,
+  signer: ActiveSigner,
   execution: EvmSwapExecutionData,
-  signWith: SignWith,
+  smartAccounts: SmartAccountService,
 ): Promise<SendResult> {
   const client = createEvmClient(evm.rpcUrl, evm.chain);
   const { swapTx, approval } = execution;
-  const owner = from as Address;
+  const owner = signer.address as Address;
 
-  // Approve the router to spend the input token, if it can't already.
+  // Does the router still need an allowance?
+  let approvalData: Hex | null = null;
   if (approval) {
     const amount = BigInt(approval.amount);
     const allowance = await client.readContract({
@@ -194,14 +199,40 @@ async function executeEvm(
       args: [owner, approval.spender as Address],
     });
     if (allowance < amount) {
-      const data = encodeFunctionData({
+      approvalData = encodeFunctionData({
         abi: erc20Abi,
         functionName: "approve",
         args: [approval.spender as Address, amount],
       });
-      const approveHash = await signEvm(client, owner, approval.token, data, 0n, signWith);
-      await client.waitForTransactionReceipt({ hash: approveHash });
     }
+  }
+
+  /**
+   * On a smart account, approve and swap go out as one atomic User Operation.
+   * This is the reason account abstraction is worth having in a wallet at all:
+   * as two separate transactions, the approval can land while the swap fails,
+   * leaving the router with a standing allowance over the user's tokens and
+   * the user with nothing to show for it. Batched, either both happen or
+   * neither does — and it costs one confirmation instead of two.
+   */
+  if (await smartAccounts.canBatch(evm, signer)) {
+    const calls: Call[] = [];
+    if (approvalData && approval) {
+      calls.push({ to: approval.token as Address, data: approvalData });
+    }
+    calls.push({
+      to: swapTx.to as Address,
+      value: BigInt(swapTx.value),
+      data: swapTx.data as Hex,
+    });
+    const batched = await smartAccounts.executeCalls(evm, signer, calls);
+    return { hash: batched, explorerUrl: txExplorerUrl(evm, batched) };
+  }
+
+  // Plain EOA: the approval must be mined before the swap can use it.
+  if (approvalData && approval) {
+    const approveHash = await signEvm(client, owner, approval.token, approvalData, 0n, signer.sign);
+    await client.waitForTransactionReceipt({ hash: approveHash });
   }
 
   const hash = await signEvm(
@@ -210,7 +241,7 @@ async function executeEvm(
     swapTx.to,
     swapTx.data,
     BigInt(swapTx.value),
-    signWith,
+    signer.sign,
     swapTx.gasLimit ? BigInt(swapTx.gasLimit) : undefined,
   );
   return { hash, explorerUrl: txExplorerUrl(evm, hash) };

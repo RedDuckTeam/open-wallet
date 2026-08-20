@@ -195,6 +195,27 @@ export function rpcEndpoint(network: NetworkConfig): string {
   return network.kind === ChainKind.Bitcoin ? network.esploraUrl : network.rpcUrl;
 }
 
+/**
+ * The ERC-4337 bundler for a network, or null when smart accounts aren't
+ * available on it.
+ *
+ * Derived rather than stored on `EvmNetwork` so a user-imported custom chain
+ * gets bundler support on the same terms as a built-in one, with no per-network
+ * literal to keep in sync. Non-EVM networks are always null — User Operations
+ * and EntryPoints are an EVM-family concept, and Solana/Bitcoin have no
+ * equivalent to route through.
+ */
+export function bundlerEndpoint(network: NetworkConfig): string | null {
+  if (network.kind !== ChainKind.Evm || !env.bundlerUrl) return null;
+  return env.bundlerUrl.replaceAll("{chainId}", String(network.chain.id));
+}
+
+/** The ERC-7677 paymaster for a network, or null when User Operations are self-funded. */
+export function paymasterEndpoint(network: NetworkConfig): string | null {
+  if (network.kind !== ChainKind.Evm || !env.paymasterUrl) return null;
+  return env.paymasterUrl.replaceAll("{chainId}", String(network.chain.id));
+}
+
 // A copy of network with its endpoint replaced (custom-RPC override).
 export function withRpcEndpoint(network: NetworkConfig, endpoint: string): NetworkConfig {
   return network.kind === ChainKind.Bitcoin

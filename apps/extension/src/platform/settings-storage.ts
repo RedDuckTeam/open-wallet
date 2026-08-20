@@ -22,6 +22,34 @@ export interface Settings {
   // networkId -> custom RPC/indexer endpoint.
   customRpc: Record<string, string>;
   customNetworks: CustomEvmNetworkInput[];
+  // networkId -> custom ERC-4337 bundler endpoint, overriding the built-in one.
+  // These URLs usually carry a provider API key. They live here, in plain
+  // browser storage, and NOT in the encrypted vault on purpose: the vault is
+  // for secrets that move funds, and a bundler key is a rate-limit credential
+  // — putting it behind the password would mean the wallet couldn't read its
+  // own endpoint while locked, without making anything safer.
+  customBundler: Record<string, string>;
+  // networkId -> custom ERC-7677 paymaster endpoint. Same reasoning as above.
+  customPaymaster: Record<string, string>;
+  // networkId -> NFTs the user added by hand. Kept even when an indexer is
+  // configured: these are the ones the user explicitly asked to see, and an
+  // indexer that drops one as spam shouldn't make it disappear.
+  customNfts: Record<string, { contract: string; tokenId: string }[]>;
+  // Whether to ask the backend indexer what this account owns. Off by default,
+  // the same choice MetaMask makes for its own "Autodetect NFTs": enumeration
+  // means sending the account's address to a third-party service, which is a
+  // privacy decision the user should make rather than inherit.
+  autodetectNfts: boolean;
+  // Whether to load NFT images. Each one is a request to whatever host the
+  // collection chose, so rendering media discloses the viewer's IP — and, to
+  // a collection that serves per-token URLs, which token they hold. On by
+  // default because a manually added NFT was explicitly asked for; the toggle
+  // exists for anyone who doesn't want the requests at all.
+  displayNftMedia: boolean;
+  // Which smart-account implementation to use, as a SmartAccountKind value.
+  // Stored as a plain string: it crosses into persistence, and a settings
+  // blob written by a build that knew one more kind must not fail to load.
+  smartAccountKind: string;
 }
 
 const KEY = "openwallet.settings";

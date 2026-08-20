@@ -146,6 +146,106 @@ export interface SwapTokenRef {
   readonly decimals: number;
 }
 
+// The active account's ERC-4337 state on the active network, flattened for
+// the UI. `supported` is false when the network has no bundler configured —
+// every other field is then meaningless and the UI shows the capability as
+// unavailable rather than as "not upgraded yet".
+export interface SmartAccountView {
+  readonly supported: boolean;
+  // The endpoints in effect, with any user override applied. Populated even
+  // when `supported` is false — an empty bundler is *why* it's unsupported,
+  // so the settings UI has to be able to show and fill the field in exactly
+  // that state.
+  readonly bundlerUrl: string;
+  readonly hasCustomBundler: boolean;
+  readonly paymasterUrl: string;
+  readonly hasCustomPaymaster: boolean;
+  readonly kind: string;
+  readonly address: string;
+  readonly owner: string;
+  // True for EIP-7702: the smart account *is* the EOA, so there's no second
+  // address and no balance to migrate.
+  readonly sharesOwnerAddress: boolean;
+  // Already usable as a smart account: deployed, or delegated to our implementation.
+  readonly active: boolean;
+  // Delegated, but to a different wallet's implementation — a real state the
+  // UI must not silently present as "upgrade available".
+  readonly delegatedElsewhere: boolean;
+  readonly entryPoint: string;
+  readonly entryPointVersion: string;
+}
+
+// A prepared batch's cost, as the approval UI needs it. `maxCostWei` is
+// ERC-4337's required prefund; when `sponsored`, a paymaster pays it instead
+// of the account.
+export interface PreparedCallsView {
+  // Opaque handle to the User Operation the background is holding. The
+  // operation itself never crosses the wire: it's full of bigints, and
+  // re-preparing it on send would let the approved numbers drift from the
+  // sent ones.
+  readonly id: string;
+  readonly maxCostWei: string;
+  readonly sponsored: boolean;
+}
+
+// A settled User Operation. `success` is the operation's own outcome, not the
+// carrying transaction's — a reverted operation rides in a successful bundle.
+export interface CallsReceiptView {
+  readonly userOpHash: string;
+  readonly transactionHash: string;
+  readonly success: boolean;
+  readonly explorerUrl: string;
+}
+
+// One NFT the active account holds. `tokenId` and `balance` are decimal
+// strings, not numbers: uint256 ids routinely exceed Number.MAX_SAFE_INTEGER,
+// and a rounded id addresses a different token.
+export interface NftView {
+  readonly standard: string;
+  readonly contract: string;
+  readonly tokenId: string;
+  readonly name: string | null;
+  readonly collection: string | null;
+  readonly description: string | null;
+  readonly imageUrl: string | null;
+  readonly balance: string;
+}
+
+export interface NftListView {
+  readonly items: readonly NftView[];
+  // False when no indexer answered, so the list holds only manually added
+  // NFTs. The UI must say so — otherwise an unconfigured wallet looks
+  // identical to an empty one.
+  readonly indexed: boolean;
+  // False on non-EVM networks, which have no ERC-721/1155 to list.
+  readonly supported: boolean;
+  // Whether the user allowed the backend indexer to be queried at all.
+  readonly autodetect: boolean;
+  // Whether NFT images may be fetched from their (third-party) hosts.
+  readonly displayMedia: boolean;
+  // Opaque cursor for the next page, or null at the end.
+  readonly nextCursor: string | null;
+}
+
+// An EIP-6551 account bound to one NFT. The address exists before deployment —
+// it can receive assets while counterfactual — which is why the two facts are
+// reported separately.
+export interface TokenBoundAccountView {
+  readonly address: string;
+  readonly deployed: boolean;
+  // Base units. The account can hold funds before it's deployed, so a
+  // non-zero balance on an undeployed account is a normal, real state.
+  readonly nativeBalanceWei: string;
+}
+
+// One metadata trait. Fetched on demand for the detail screen rather than
+// carried in the list: attributes come from the token's own metadata document,
+// which indexers report inconsistently or not at all.
+export interface NftAttributeView {
+  readonly trait: string;
+  readonly value: string;
+}
+
 // A dApp origin the user has connected to.
 export interface ConnectionView {
   readonly origin: string;
@@ -167,6 +267,8 @@ export const DappRequestKind = {
   SignMessage: "sign-message",
   SignTypedData: "sign-typed-data",
   SendTransaction: "send-transaction",
+  // EIP-5792 wallet_sendCalls: a batch executed atomically as one User Operation.
+  SendCalls: "send-calls",
   SwitchChain: "switch-chain",
 } as const;
 export type DappRequestKind = (typeof DappRequestKind)[keyof typeof DappRequestKind];
@@ -177,6 +279,19 @@ export interface DappTxView {
   readonly value: string;
   readonly data: string;
   readonly gas: string | null;
+}
+
+// A batch awaiting approval. Priced before the window opens, so the user
+// approves the same User Operation that gets sent — see `prepareCalls`.
+export interface DappBatchView {
+  readonly calls: readonly DappTxView[];
+  readonly maxCostWei: string;
+  readonly sponsored: boolean;
+  // True when this batch also turns the account into a smart account. EIP-5792
+  // permits a wallet to upgrade on demand (that's what `atomic: "ready"`
+  // advertises), but it changes the account permanently, so it is never left
+  // implicit on the approval screen.
+  readonly upgradesAccount: boolean;
 }
 
 // A pending dApp request awaiting the user's approval, shown in the approval
@@ -194,6 +309,8 @@ export interface DappRequestView {
   // personal_sign text or pretty-printed typed data.
   readonly message: string | null;
   readonly tx: DappTxView | null;
+  // wallet_sendCalls batch, priced.
+  readonly batch: DappBatchView | null;
   // wallet_switchEthereumChain target name.
   readonly chainName: string | null;
 }
@@ -240,6 +357,64 @@ export interface ProtocolMap {
   getSwapQuote(input: { from: SwapTokenRef; to: SwapTokenRef; amount: string }): SwapQuoteView;
   executeSwap(input: { execution: SwapExecutionView }): SendResult;
 
+  // Smart account (ERC-4337)
+  getSmartAccount(): SmartAccountView;
+  // Prepares the User Operation that upgrades this account (an empty batch:
+  // the EIP-7702 authorization rides along with it), priced but not sent.
+  prepareSmartAccountUpgrade(): PreparedCallsView;
+  // Signs and submits a batch prepared earlier, by handle. Returns the User
+  // Operation hash, which is not a transaction hash — the bundler decides
+  // later which transaction carries it, so settlement is a separate step.
+  sendPreparedCalls(input: { id: string }): { userOpHash: string };
+  // Blocks until the bundler reports the operation settled, then reports the
+  // transaction that carried it. Split from `sendPreparedCalls` so a slow
+  // bundler can't turn a successful submission into a failed-looking send.
+  awaitCalls(input: { userOpHash: string }): CallsReceiptView;
+  // Clears the EIP-7702 delegation; the account goes back to a plain EOA.
+  revertSmartAccount(): SendResult;
+  setSmartAccountKind(input: { kind: string }): SmartAccountView;
+  // Every implementation this build knows, for the picker.
+  smartAccountKinds(): {
+    id: string;
+    label: string;
+    sharesOwnerAddress: boolean;
+    // False for kinds the wallet can't yet drive end to end. Reported rather
+    // than hidden so the picker states why instead of silently offering a
+    // choice that leads nowhere.
+    available: boolean;
+    note: string;
+  }[];
+  setNetworkBundler(input: { id: string; bundlerUrl: string }): SmartAccountView;
+  resetNetworkBundler(input: { id: string }): SmartAccountView;
+  setNetworkPaymaster(input: { id: string; paymasterUrl: string }): SmartAccountView;
+  resetNetworkPaymaster(input: { id: string }): SmartAccountView;
+
+  // NFTs (ERC-721 / ERC-1155)
+  getNfts(input: { cursor?: string }): NftListView;
+  // On-chain read of one token's metadata, including attributes.
+  getNftDetail(input: { contract: string; tokenId: string }): NftAttributeView[];
+  addNft(input: { contract: string; tokenId: string }): NftView;
+  removeNft(input: { contract: string; tokenId: string }): void;
+  setNftAutodetect(input: { enabled: boolean }): NftListView;
+  setNftMedia(input: { enabled: boolean }): NftListView;
+  sendNft(input: {
+    contract: string;
+    tokenId: string;
+    standard: string;
+    to: string;
+    amount?: string;
+  }): SendResult;
+  // EIP-6551
+  getTokenBoundAccount(input: { contract: string; tokenId: string }): TokenBoundAccountView;
+  deployTokenBoundAccount(input: { contract: string; tokenId: string }): SendResult;
+  sendFromTokenBoundAccount(input: {
+    contract: string;
+    tokenId: string;
+    to: string;
+    amount: string;
+    token?: string;
+  }): SendResult;
+
   // dApp connections (popup management)
   getConnections(): ConnectionView[];
   activeSiteConnection(): ActiveSiteView;
@@ -282,6 +457,27 @@ export const Message = {
   swapTokens: "swapTokens",
   getSwapQuote: "getSwapQuote",
   executeSwap: "executeSwap",
+  getSmartAccount: "getSmartAccount",
+  prepareSmartAccountUpgrade: "prepareSmartAccountUpgrade",
+  sendPreparedCalls: "sendPreparedCalls",
+  awaitCalls: "awaitCalls",
+  revertSmartAccount: "revertSmartAccount",
+  setSmartAccountKind: "setSmartAccountKind",
+  smartAccountKinds: "smartAccountKinds",
+  setNetworkBundler: "setNetworkBundler",
+  resetNetworkBundler: "resetNetworkBundler",
+  setNetworkPaymaster: "setNetworkPaymaster",
+  resetNetworkPaymaster: "resetNetworkPaymaster",
+  getNfts: "getNfts",
+  getNftDetail: "getNftDetail",
+  addNft: "addNft",
+  removeNft: "removeNft",
+  setNftAutodetect: "setNftAutodetect",
+  setNftMedia: "setNftMedia",
+  sendNft: "sendNft",
+  getTokenBoundAccount: "getTokenBoundAccount",
+  deployTokenBoundAccount: "deployTokenBoundAccount",
+  sendFromTokenBoundAccount: "sendFromTokenBoundAccount",
   getConnections: "getConnections",
   activeSiteConnection: "activeSiteConnection",
   disconnectSite: "disconnectSite",

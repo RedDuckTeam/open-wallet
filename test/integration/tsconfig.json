@@ -1,7 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    // The Sepolia suite gates itself on `process.env`, so this project needs
+    // Node's globals — the packages under `packages/` deliberately don't.
+    "types": ["node"]
   },
   "include": ["."]
 }

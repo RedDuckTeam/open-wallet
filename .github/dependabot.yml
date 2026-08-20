@@ -1,0 +1,32 @@
+# A wallet's dependency tree is part of its attack surface: a compromised
+# transitive package runs with full access to the background worker, where the
+# keys are. Weekly updates keep that window small without drowning the repo in
+# noise.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # Patch/minor bumps are batched: individually they're rarely interesting,
+      # and one PR per package makes the important ones easy to miss.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Cryptography and chain libraries are pinned deliberately and reviewed
+      # by hand — a major bump here changes signing behaviour, not just an API.
+      - dependency-name: "@noble/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@scure/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "viem"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
