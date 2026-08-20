@@ -329,8 +329,11 @@ export function createProviderService({
 
   async function switchChain(context: RequestContext, params: unknown): Promise<null> {
     const target = parseSwitchChain(params);
+    // Visible networks only: a dApp must not be able to activate a chain the
+    // current mode hides (testnet mode ↔ mainnets), which would leave the
+    // wallet on a network its own list doesn't contain.
     const network = settings
-      .allNetworks()
+      .visibleNetworks()
       .find((n): n is EvmNetwork => n.kind === ChainKind.Evm && n.chain.id === target);
     if (!network) {
       throw providerError(4902, `Chain 0x${target.toString(16)} has not been added to OpenWallet`);

@@ -152,8 +152,27 @@ export const NETWORKS: readonly NetworkConfig[] = [
   },
 ];
 
-// Sepolia by default, so send/receive works with free faucet funds.
-export const DEFAULT_NETWORK_ID = "sepolia";
+// Ethereum by default: with testnet mode off the wallet lists mainnets only,
+// so the starting network has to be one of them.
+export const DEFAULT_NETWORK_ID = "ethereum";
+/** Where testnet mode lands when it hides the current network. */
+export const TESTNET_DEFAULT_NETWORK_ID = "sepolia";
+
+/**
+ * The networks a given mode shows: testnet mode shows only test networks,
+ * normal mode only main networks. User-added custom networks are exempt —
+ * the wallet can't classify an arbitrary chain id, and hiding something the
+ * user explicitly added would read as data loss.
+ */
+export function visibleNetworks(
+  networks: readonly NetworkConfig[],
+  testnetMode: boolean,
+  isCustom: (id: string) => boolean,
+): NetworkConfig[] {
+  return networks.filter(
+    (network) => (network.testnet ?? false) === testnetMode || isCustom(network.id),
+  );
+}
 
 /**
  * The network whose ENS registry every EVM name is resolved against.

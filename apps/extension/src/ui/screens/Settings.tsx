@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Eye, Lock, Moon, Sparkles, Sun } from "lucide-react";
+import { Eye, FlaskConical, Lock, Moon, Sparkles, Sun } from "lucide-react";
 import { walletApi } from "../../messaging/client.js";
 import { errorMessage } from "../format/error.js";
 import { useTheme } from "../hooks/useTheme.js";
@@ -21,19 +21,24 @@ import {
 } from "../components/shadcn/alert-dialog.js";
 
 export function Settings({
+  testnetMode,
   onBack,
   onLocked,
   onReset,
   onNav,
+  onModeChanged,
 }: {
+  testnetMode: boolean;
   onBack: () => void;
   onLocked: () => void;
   onReset: () => void;
   onNav: (view: "smartAccount") => void;
+  onModeChanged: () => void;
 }): React.ReactElement {
   return (
     <Screen title="Settings" onBack={onBack}>
       <Appearance />
+      <TestnetMode enabled={testnetMode} onChanged={onModeChanged} />
       <Separator />
       <Button variant="outline" className="w-full" onClick={() => onNav("smartAccount")}>
         <Sparkles />
@@ -103,6 +108,51 @@ function Appearance(): React.ReactElement {
         id="dark-mode"
         checked={dark}
         onCheckedChange={(on) => setTheme(on ? "dark" : "light")}
+      />
+    </Label>
+  );
+}
+
+/**
+ * Testnet mode narrows the wallet to test networks only: mainnets disappear
+ * from the network list and the swap tab goes away (aggregators don't route
+ * testnets). If the active network gets hidden by the flip, the wallet layer
+ * moves activation to the mode's default chain — hence `onChanged`, which
+ * re-reads the status.
+ */
+function TestnetMode({
+  enabled,
+  onChanged,
+}: {
+  enabled: boolean;
+  onChanged: () => void;
+}): React.ReactElement {
+  const [busy, setBusy] = useState(false);
+
+  const toggle = async (on: boolean): Promise<void> => {
+    setBusy(true);
+    try {
+      await walletApi.setTestnetMode(on);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Label
+      htmlFor="testnet-mode"
+      className="flex cursor-pointer items-center justify-between font-normal"
+    >
+      <span className="flex items-center gap-2 text-sm font-medium">
+        <FlaskConical className="size-4" />
+        Testnet mode
+      </span>
+      <Switch
+        id="testnet-mode"
+        checked={enabled}
+        disabled={busy}
+        onCheckedChange={(on) => void toggle(on)}
       />
     </Label>
   );

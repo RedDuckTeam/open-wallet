@@ -183,7 +183,7 @@ export function registerHandlers({
     hasCustomRpc: settings.hasRpcOverride(network.id),
   });
 
-  const networkList = (): NetworkView[] => settings.allNetworks().map(networkView);
+  const networkList = (): NetworkView[] => settings.visibleNetworks().map(networkView);
 
   async function loadPrices(
     network: NetworkConfig,
@@ -208,6 +208,7 @@ export function registerHandlers({
       accounts: unlocked ? accountsForNetwork(network) : [],
       network: networkView(network),
       networks: networkList(),
+      testnetMode: settings.testnetMode,
     };
   });
 
@@ -299,6 +300,14 @@ export function registerHandlers({
     await settings.selectNetwork(data.id);
     dapp.provider.emitChainChanged();
     dapp.provider.emitAccountsChanged();
+  });
+
+  on(Message.setTestnetMode, async ({ data }) => {
+    noteActivity();
+    await settings.setTestnetMode(data.enabled);
+    // The flip can move activation to another chain; connected dApps must
+    // hear about it the same way they do for an explicit network switch.
+    dapp.provider.emitChainChanged();
   });
 
   on(Message.addNetwork, async ({ data }) => {

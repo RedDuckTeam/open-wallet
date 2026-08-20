@@ -29,6 +29,9 @@ export function Unlocked({
   reload: () => void;
 }): React.ReactElement {
   const [view, setView] = useState<View>("home");
+  // Testnet mode has no swap (aggregators don't route testnets): the swap
+  // view falls back to home, and with one tab left the bar disappears too.
+  const effectiveView = status.testnetMode && view === "swap" ? "home" : view;
   const back = (): void => setView("home");
   const backAndReload = (): void => {
     back();
@@ -36,7 +39,7 @@ export function Unlocked({
   };
 
   const content = ((): React.ReactElement => {
-    switch (view) {
+    switch (effectiveView) {
       case "send":
         return <Send network={status.network} onBack={back} onSent={backAndReload} />;
       case "receive":
@@ -62,7 +65,16 @@ export function Unlocked({
       case "addToken":
         return <AddToken onBack={back} onAdded={backAndReload} />;
       case "settings":
-        return <Settings onBack={back} onLocked={reload} onReset={reload} onNav={setView} />;
+        return (
+          <Settings
+            testnetMode={status.testnetMode}
+            onBack={back}
+            onLocked={reload}
+            onReset={reload}
+            onNav={setView}
+            onModeChanged={reload}
+          />
+        );
       case "nfts":
         return <Nfts network={status.network} onBack={back} />;
       case "smartAccount":
@@ -76,13 +88,13 @@ export function Unlocked({
     }
   })();
 
-  const tab = asTab(view);
+  const tab = asTab(effectiveView);
 
   return (
     <AssetsProvider accountId={account.id} networkId={status.network.id}>
       <div className="flex flex-1 flex-col">
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">{content}</div>
-        {tab ? <BottomNav active={tab} onSelect={setView} /> : null}
+        {tab && !status.testnetMode ? <BottomNav active={tab} onSelect={setView} /> : null}
       </div>
     </AssetsProvider>
   );

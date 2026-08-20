@@ -116,6 +116,7 @@ export interface WalletStatus {
   readonly accounts: readonly AccountView[];
   readonly network: NetworkView;
   readonly networks: readonly NetworkView[];
+  readonly testnetMode: boolean;
 }
 
 export interface SendResult {
@@ -338,6 +339,10 @@ export interface ProtocolMap {
 
   // Networks
   selectNetwork(input: { id: string }): void;
+  // Testnet mode narrows the visible network list to test networks and hides
+  // swaps; flipping it can move activation to the mode's default chain, so
+  // callers must re-read the status afterwards.
+  setTestnetMode(input: { enabled: boolean }): void;
   addNetwork(input: AddNetworkInput): NetworkView[];
   removeNetwork(input: { id: string }): NetworkView[];
   setNetworkRpc(input: { id: string; rpcUrl: string }): NetworkView[];
@@ -450,6 +455,7 @@ export const Message = {
   importAccount: "importAccount",
   removeAccount: "removeAccount",
   selectNetwork: "selectNetwork",
+  setTestnetMode: "setTestnetMode",
   addNetwork: "addNetwork",
   removeNetwork: "removeNetwork",
   setNetworkRpc: "setNetworkRpc",

@@ -50,6 +50,8 @@ export interface Settings {
   // background/slippage.ts; stored raw and sanitized on read, so a blob from
   // another build degrades to the default instead of failing to load.
   slippagePct: number;
+  // Testnet mode: the wallet shows only test networks and hides swaps.
+  testnetMode: boolean;
   // Which smart-account implementation to use, as a SmartAccountKind value.
   // Stored as a plain string: it crosses into persistence, and a settings
   // blob written by a build that knew one more kind must not fail to load.

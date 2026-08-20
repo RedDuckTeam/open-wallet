@@ -7,6 +7,8 @@ import {
   DEFAULT_NETWORK_ID,
   ENS_NETWORK_ID,
   NETWORKS,
+  TESTNET_DEFAULT_NETWORK_ID,
+  visibleNetworks,
   withRpcEndpoint,
   type CustomEvmNetworkInput,
   type EvmNetwork,
@@ -32,6 +34,7 @@ const DEFAULTS: Settings = {
   displayNftMedia: true,
   smartAccountKind: SmartAccountKind.Simple7702,
   slippagePct: DEFAULT_SLIPPAGE_PCT,
+  testnetMode: false,
 };
 
 // Contract addresses are case-insensitive; token ids are decimal strings and
@@ -62,6 +65,17 @@ export class SettingsService {
 
   async init(): Promise<void> {
     this.#settings = { ...DEFAULTS, ...(await this.storage.load()) };
+    // Settings written before testnet mode existed can point activation at a
+    // network the current mode hides (the old default was Sepolia). Heal it
+    // here rather than showing a network the list doesn't contain.
+    const active = this.activeNetwork();
+    if (!this.visibleNetworks().some((network) => network.id === active.id)) {
+      await this.selectNetwork(this.#modeDefaultNetworkId());
+    }
+  }
+
+  #modeDefaultNetworkId(): string {
+    return this.#settings.testnetMode ? TESTNET_DEFAULT_NETWORK_ID : DEFAULT_NETWORK_ID;
   }
 
   get accountCount(): number {
@@ -86,6 +100,17 @@ export class SettingsService {
       const override = this.#settings.customRpc[network.id];
       return override ? withRpcEndpoint(network, override) : network;
     });
+  }
+
+  /**
+   * The networks the current mode presents to the user. `allNetworks` stays
+   * complete on purpose — lookups by id and ENS resolution (a read against
+   * L1) must keep working regardless of what the UI shows.
+   */
+  visibleNetworks(): NetworkConfig[] {
+    return visibleNetworks(this.allNetworks(), this.#settings.testnetMode, (id) =>
+      this.isCustomNetwork(id),
+    );
   }
 
   network(id: string): NetworkConfig {
@@ -195,7 +220,7 @@ export class SettingsService {
       customPaymaster: omitKey(this.#settings.customPaymaster, id),
       customNfts: omitKey(this.#settings.customNfts, id),
     };
-    if (this.#settings.activeNetworkId === id) patch.activeNetworkId = DEFAULT_NETWORK_ID;
+    if (this.#settings.activeNetworkId === id) patch.activeNetworkId = this.#modeDefaultNetworkId();
     await this.#update(patch);
   }
 
@@ -244,6 +269,25 @@ export class SettingsService {
 
   get slippagePct(): number {
     return this.#settings.slippagePct;
+  }
+
+  get testnetMode(): boolean {
+    return this.#settings.testnetMode;
+  }
+
+  /**
+   * Flips testnet mode. If the flip hides the active network, activation
+   * moves to that mode's default chain (Sepolia / Ethereum) via
+   * `selectNetwork`, which also handles an imported account that doesn't
+   * exist on the new chain's coin.
+   */
+  async setTestnetMode(enabled: boolean): Promise<void> {
+    if (enabled === this.#settings.testnetMode) return;
+    await this.#update({ testnetMode: enabled });
+    const active = this.activeNetwork();
+    if (!this.visibleNetworks().some((network) => network.id === active.id)) {
+      await this.selectNetwork(this.#modeDefaultNetworkId());
+    }
   }
 
   /** Stores an already-validated value — bounds are the caller's job (`validateSlippagePct`). */

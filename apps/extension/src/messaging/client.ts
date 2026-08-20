@@ -42,6 +42,8 @@ export const walletApi = {
     sendMessage(Message.send, { assetId, to, amount }),
   getFeeReserve: (intent: "transfer" | "swap") => sendMessage(Message.getFeeReserve, { intent }),
 
+  setTestnetMode: (enabled: boolean) => sendMessage(Message.setTestnetMode, { enabled }),
+
   swapTokens: (query: string) => sendMessage(Message.swapTokens, { query }),
   getSwapSlippage: () => sendMessage(Message.getSwapSlippage, undefined),
   setSwapSlippage: (pct: number) => sendMessage(Message.setSwapSlippage, { pct }),

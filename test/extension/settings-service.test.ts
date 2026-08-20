@@ -77,6 +77,66 @@ describe("SettingsService cross-kind reset", () => {
   });
 });
 
+describe("SettingsService testnet mode", () => {
+  it("is off by default and shows only mainnets", async () => {
+    const service = await freshService();
+    expect(service.testnetMode).toBe(false);
+    const visible = service.visibleNetworks();
+    expect(visible.length).toBeGreaterThan(0);
+    for (const network of visible) {
+      expect(network.testnet ?? false).toBe(false);
+    }
+  });
+
+  it("shows only testnets when on and moves activation off a hidden network", async () => {
+    const service = await freshService();
+    expect(service.activeNetwork().id).toBe("ethereum");
+
+    await service.setTestnetMode(true);
+    expect(service.activeNetwork().id).toBe("sepolia");
+    for (const network of service.visibleNetworks()) {
+      expect(network.testnet).toBe(true);
+    }
+
+    await service.setTestnetMode(false);
+    expect(service.activeNetwork().id).toBe("ethereum");
+  });
+
+  it("keeps a still-visible active network across a redundant toggle", async () => {
+    const service = await freshService();
+    await service.setTestnetMode(true);
+    await service.selectNetwork("bitcoin-testnet");
+    await service.setTestnetMode(true); // no-op — must not touch activation
+    expect(service.activeNetwork().id).toBe("bitcoin-testnet");
+  });
+
+  it("keeps a custom network visible in both modes", async () => {
+    const service = await freshService();
+    const id = await service.addNetwork({
+      name: "Anvil",
+      chainId: 31_337,
+      rpcUrl: "http://127.0.0.1:8545",
+      symbol: "ETH",
+    });
+    await service.setTestnetMode(true);
+    expect(service.visibleNetworks().some((network) => network.id === id)).toBe(true);
+    // ENS keeps resolving through the hidden L1.
+    expect(service.ensNetwork()?.id).toBe("ethereum");
+  });
+
+  it("heals a stored active network the current mode hides", async () => {
+    // Settings written before testnet mode existed default to Sepolia.
+    const storage = new FakeStorage();
+    const seed = new SettingsService(storage);
+    await seed.init();
+    storage.saved = { ...storage.saved!, activeNetworkId: "sepolia", testnetMode: false };
+
+    const service = new SettingsService(storage);
+    await service.init();
+    expect(service.activeNetwork().id).toBe("ethereum");
+  });
+});
+
 describe("SettingsService slippage", () => {
   it("defaults to the policy default and persists an update", async () => {
     const storage = new FakeStorage();
